@@ -1,0 +1,143 @@
+--@name Console Screen Modulator
+--@author
+--@server
+
+wire.adjustInputs({"VRAM"},{"Wirelink"})
+
+local function quotaCheck(n)
+    return math.max(quotaAverage(), quotaUsed()) < quotaMax() * n
+end
+
+local MATRIX_WIDTH = 2
+local MATRIX_HEIGHT = 2
+local MATRIX_TOTAL_WIDTH = 2 * 30
+local MATRIX_TOTAL_HEIGHT = 2 * 18
+
+local vram_start_address = MATRIX_WIDTH * MATRIX_HEIGHT * 2048
+
+local matrix_lookup = {}
+
+local saved_state = {
+    stage = 0,
+    x = 0,
+    y = 0,
+    x2 = 0,
+    y2 = 0,
+    w = 0,
+    h = 0,
+    w2 = 0,
+    h2 = 0,
+    idx = 0,
+    src_idx = 0,
+    dst_idx = 0,
+    color = 0
+}
+local instruction_pointer = 0
+
+instruction_list = {
+    function(state)
+        
+        while quotaCheck(0.1) do
+        
+            if state.stage == 0 then
+                state.x = wire.ports.VRAM[vram_start_address + instruction_pointer + 1]
+                state.y = wire.ports.VRAM[vram_start_address + instruction_pointer + 2]
+                state.color = wire.ports.VRAM[vram_start_address + instruction_pointer + 3]
+                state.src_idx = wire.ports.VRAM[vram_start_address + instruction_pointer + 4] + vram_start_address
+                state.dst_idx = state.x + state.y * MATRIX_TOTAL_WIDTH + 1
+                state.idx = 0
+                state.stage = 1
+            else
+            
+                local char = wire.ports.VRAM[state.src_idx]
+                if char == 0 then
+                    instruction_pointer = instruction_pointer + 5
+                    return
+                end
+                
+                if state.x + state.idx >= MATRIX_TOTAL_WIDTH then
+                    instruction_pointer = instruction_pointer + 5
+                    return
+                end
+                
+                local loc = matrix_lookup[state.idx + state.dst_idx]
+                wire.ports.VRAM[loc] = char
+                wire.ports.VRAM[loc + 1] = state.color
+                state.src_idx = state.src_idx + 1
+                state.idx = state.idx + 1
+            
+            end
+        
+        end
+        
+    end
+}
+
+for i = 0, MATRIX_WIDTH * MATRIX_HEIGHT - 1 do
+    wire.ports.VRAM[i * 2048 + 2041] = 1
+end
+
+function csm_tick()
+
+    if wire.ports.VRAM[vram_start_address + instruction_pointer] == 0 then
+        instruction_pointer = 0
+        saved_state.stage = 0
+        saved_state.x = 0
+        saved_state.y = 0
+        saved_state.x2 = 0
+        saved_state.y2 = 0
+        saved_state.w = 0
+        saved_state.h = 0
+        saved_state.w2 = 0
+        saved_state.h2 = 0
+        saved_state.idx = 0
+        saved_state.src_idx = 0
+        saved_state.dst_idx = 0
+        saved_state.color = 0
+    else
+        instruction_list[wire.ports.VRAM[vram_start_address + instruction_pointer]](saved_state)
+    end
+
+end
+
+hook.add("tick", "csm_map_screen", function()
+
+    local idx = saved_state.idx
+
+    if idx == MATRIX_TOTAL_WIDTH * MATRIX_TOTAL_HEIGHT then
+        hook.remove("tick", "csm_map_screen")
+        return
+    end
+    
+    local floor = math.floor
+
+    while quotaCheck(0.8) do
+        
+        local x = idx % MATRIX_TOTAL_WIDTH
+        local y = floor(idx / MATRIX_TOTAL_WIDTH)
+        
+        local matrix_x = floor(x / 30)
+        local matrix_y = floor(y / 18) * MATRIX_WIDTH
+        
+        local local_x = x % 30
+        local local_y = (y % 18) * 30
+        
+        local lookup_location = (matrix_x + matrix_y) * 2048 + (local_x + local_y) * 2
+        
+        matrix_lookup[idx + 1] = lookup_location
+        
+        wire.ports.VRAM[lookup_location] = idx
+        wire.ports.VRAM[lookup_location + 1] = idx
+        
+        idx = idx + 1
+        saved_state.idx = idx
+        
+        if idx == MATRIX_TOTAL_WIDTH * MATRIX_TOTAL_HEIGHT then
+            hook.remove("tick", "csm_map_screen")
+            hook.add("tick", "csm_tick", csm_tick)
+            return
+        end
+    
+    end
+    
+end)

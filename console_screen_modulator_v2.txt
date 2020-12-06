@@ -1,0 +1,265 @@
+--@name Console Screen Modulator V2
+--@author Mavain
+--@server
+
+local MATRIX_WIDTH = 2
+local MATRIX_HEIGHT = 2
+
+local MAX_QUOTA_PERCENTAGE = 0.8
+
+local MATRIX_TOTAL_WIDTH = MATRIX_WIDTH * 30
+local MATRIX_TOTAL_HEIGHT = MATRIX_HEIGHT * 18
+
+local MATRIX_TOTAL_SIZE = MATRIX_TOTAL_WIDTH * MATRIX_TOTAL_HEIGHT
+
+wire.adjustInputs({"ConsoleWirelink"}, {"Wirelink"})
+
+local VRAM = {}
+local VRAM_POINTER = 1
+
+local MATRIX_OUTPUT = wire.ports["ConsoleWirelink"]
+local MATRIX_LOOKUP = {}
+
+local MAX_QUOTA_PERCENTAGE_ACTIVE = MAX_QUOTA_PERCENTAGE
+local function withinQuota()
+    return math.max(quotaAverage(), quotaUsed()) < quotaMax() * MAX_QUOTA_PERCENTAGE_ACTIVE
+end
+
+hook.add("writecell", "csmv2", function(address, data)
+    VRAM[address] = data
+end)
+
+-- Startup matrix lookup map population function
+local matrixLookupPopulateFunction = coroutine.wrap(function()
+
+    local yield = coroutine.yield
+    local floor = math.floor
+    local index = 0
+    
+    local testString = "Figuring out matrix locations please hold on...             "
+    
+    for i = 0, MATRIX_WIDTH * MATRIX_HEIGHT - 1 do
+        MATRIX_OUTPUT[i * 2048 + 2023] = -0.019
+    end
+    
+    for y = 0, MATRIX_TOTAL_HEIGHT - 1 do
+        for x = 0, MATRIX_TOTAL_WIDTH - 1 do
+            
+            local localX = x % 30
+            local localY = y % 18
+            
+            local hardwareX = floor(x / 30)
+            local hardwareY = floor(y / 18)
+            
+            local location = (hardwareX + hardwareY * MATRIX_WIDTH) * 2048 + (localX + localY * 30) * 2
+            
+            MATRIX_OUTPUT[location] = testString:byte(index % #testString + 1)
+            MATRIX_OUTPUT[location + 1] = index
+            
+            MATRIX_LOOKUP[index] = location
+            
+            index = index + 1
+            
+            yield()
+            
+        end    
+    end
+    return true
+end)
+
+local writeVRAMToScreenFunction = coroutine.wrap(function()
+
+    local yield = coroutine.yield
+    
+    local index = 0
+    
+    while true do
+        
+        local location = MATRIX_LOOKUP[index]
+        MATRIX_OUTPUT[location] = VRAM[index + 1] or 0
+        MATRIX_OUTPUT[location + 1] = 99
+        
+        index = (index + 1) % MATRIX_TOTAL_SIZE
+        
+        yield()    
+        
+    end
+    
+end)
+
+local INSTRUCTION_MAP = {
+    --GPU Idle
+    [0] = function()
+        VRAM_POINTER = 1
+        VRAM[VRAM_POINTER] = 0
+        MAX_QUOTA_PERCENTAGE_ACTIVE = 0.2
+        while VRAM[VRAM_POINTER] == 0 do coroutine.yield() end
+        MAX_QUOTA_PERCENTAGE_ACTIVE = MAX_QUOTA_PERCENTAGE
+        return true
+    end,
+    --Blank screen
+    [1] = function()
+        VRAM_POINTER = VRAM_POINTER + 1
+        --[[
+        for i = 0, MATRIX_WIDTH * MATRIX_HEIGHT - 1 do
+            MATRIX_OUTPUT[i * 2048 + 2041] = 1
+        end
+        coroutine.yield()
+        ]]
+        for i = 0, MATRIX_TOTAL_SIZE - 1 do
+            local location = MATRIX_LOOKUP[i]
+            MATRIX_OUTPUT[location] = 0
+            MATRIX_OUTPUT[location + 1] = 0
+            coroutine.yield()
+        end
+        return true
+    end,
+    --Text Rendering
+    [2] = function()
+        
+        local x      = VRAM[VRAM_POINTER + 1]
+        local y      = VRAM[VRAM_POINTER + 2]
+        local color  = VRAM[VRAM_POINTER + 3]
+        local length = VRAM[VRAM_POINTER + 4]
+        VRAM_POINTER = VRAM_POINTER + 6
+        
+        local tempPointer = VRAM_POINTER - 1
+        
+        VRAM_POINTER = VRAM_POINTER + length
+        
+        for i = 1, length do
+        
+            local currentX = (x + i - 1)
+            if currentX >= MATRIX_TOTAL_WIDTH then return true end
+            
+            local pos = currentX + y * MATRIX_TOTAL_WIDTH
+            local location = MATRIX_LOOKUP[pos]
+            
+            MATRIX_OUTPUT[location] = VRAM[tempPointer]
+            MATRIX_OUTPUT[location + 1] = color
+            
+            tempPointer = tempPointer + 1
+            coroutine.yield()
+        end
+        
+        return true
+    end,
+    --Drawing filled rectangle
+    [3] = function()
+        local x = VRAM[VRAM_POINTER + 1]
+        local y = VRAM[VRAM_POINTER + 2]
+        local w = VRAM[VRAM_POINTER + 3]
+        local h = VRAM[VRAM_POINTER + 4]
+        local c = VRAM[VRAM_POINTER + 5]
+        VRAM_POINTER = VRAM_POINTER + 6
+        
+        local function clamp(n, a, b) return math.max(a, math.min(n, b)) end
+        
+        for nx = clamp(x, 0, MATRIX_TOTAL_WIDTH - 1), clamp(x + w - 1, 0, MATRIX_TOTAL_WIDTH - 1) do
+            for ny = clamp(y, 0, MATRIX_TOTAL_HEIGHT - 1), clamp(y + h - 1, 0, MATRIX_TOTAL_HEIGHT - 1) do
+                
+                local location = MATRIX_LOOKUP[nx + ny * MATRIX_TOTAL_WIDTH]
+                MATRIX_OUTPUT[location] = 32 --Space
+                MATRIX_OUTPUT[location + 1] = c
+                
+                coroutine.yield()
+                
+            end
+        end
+    
+        return true
+    end,
+    --Drawing filled triangle
+    [4] = function()
+        
+        //printTable(VRAM)
+        
+        local x1 = VRAM[VRAM_POINTER + 1]
+        local y1 = VRAM[VRAM_POINTER + 2]
+        local x2 = VRAM[VRAM_POINTER + 3]
+        local y2 = VRAM[VRAM_POINTER + 4]
+        local x3 = VRAM[VRAM_POINTER + 5]
+        local y3 = VRAM[VRAM_POINTER + 6]
+        local color = VRAM[VRAM_POINTER + 7]
+        VRAM_POINTER = VRAM_POINTER + 8
+        
+        local floor = math.floor
+                
+        local function lerp(a, b, t)
+            return a * (1 - t) + b * t
+        end
+        
+        local function clamp(n, a, b) return math.max(a, math.min(n, b)) end
+        
+        local points = {
+            {clamp(x1, 0, MATRIX_TOTAL_WIDTH - 1), clamp(y1, 0, MATRIX_TOTAL_HEIGHT - 1)}, 
+            {clamp(x2, 0, MATRIX_TOTAL_WIDTH - 1), clamp(y2, 0, MATRIX_TOTAL_HEIGHT - 1)}, 
+            {clamp(x3, 0, MATRIX_TOTAL_WIDTH - 1), clamp(y3, 0, MATRIX_TOTAL_HEIGHT - 1)} 
+        }
+        table.sort(points, function(a, b) return a[2] < b[2] end)
+        
+        local topX = points[1][1]
+        local topY = points[1][2]
+        local midX = points[2][1]
+        local midY = points[2][2]
+        local lowX = points[3][1]
+        local lowY = points[3][2]
+        
+        local topLowXDiff = lowX - topX
+        local topLowYDiff = lowY - topY
+        
+        for y = topY, midY do
+            
+            local lerpTopMidX = lerp(topX, midX, (y - topY) / (midY - topY))
+            local lerpTopLowX = lerp(topX, lowX, (y - topY) / (lowY - topY))
+            
+            local leftX = math.min(lerpTopMidX, lerpTopLowX)
+            local rightX = math.max(lerpTopMidX, lerpTopLowX)
+                
+                
+            for x = leftX, rightX do
+
+                local location = MATRIX_LOOKUP[floor(x + y * MATRIX_TOTAL_WIDTH)]
+                MATRIX_OUTPUT[location] = 32
+                MATRIX_OUTPUT[location + 1] = color
+                
+                coroutine.yield()
+                
+            end
+                
+        end
+        
+        
+        return true
+    end
+}
+
+local currentlyExecutingInstruction = coroutine.wrap(INSTRUCTION_MAP[0])
+
+local function functionScheduler()
+    
+    while withinQuota() do
+    
+        if currentlyExecutingInstruction() then
+            
+            local instruction = INSTRUCTION_MAP[VRAM[VRAM_POINTER] or 0]
+            
+            if not instruction then print("ERROR Invalid instruction encountered! #" .. VRAM[VRAM_POINTER]) end
+            
+            currentlyExecutingInstruction = coroutine.wrap(instruction)
+            
+        end
+    
+    end
+    
+end
+
+hook.add("think", "csmv2", function()
+    while withinQuota() do
+        if matrixLookupPopulateFunction() then
+            hook.remove("think", "csmv2")
+            hook.add("think", "csmv2", functionScheduler)
+            break
+        end
+    end
+end)

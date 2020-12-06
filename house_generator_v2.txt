@@ -1,0 +1,376 @@
+--@name House Generator V2
+--@author
+--@client
+
+--if player() ~= owner() then return end
+
+Space = {
+    MAX_WIDTH = 10,
+    MAX_HEIGHT = 10
+}
+
+Wall = {
+    OUTSIDE_WALLS = {},
+    INSIDE_WALLS = {}
+}
+Wall.__index = {}
+
+function Wall.new(x, y, dir, room)
+    local wall = {}
+    setmetatable(wall, Wall)
+    wall.x = x
+    wall.y = y
+    wall.dir = dir
+    wall.room = room
+    return wall
+end
+
+function Wall.addOutside(wall)
+    table.insert(Wall.OUTSIDE_WALLS, wall)
+end
+
+function Wall.addInside(wall)
+    table.insert(Wall.INSIDE_WALLS, wall)
+end
+
+Door = {
+    DOORS = {}
+}
+Door.__index = Door
+
+function Door.new(x, y, dir, roomOut, roomIn)
+    local door = {}
+    setmetatable(door, Door)
+    door.x = x
+    door.y = y
+    door.dir = dir
+    door.roomOut = roomOut
+    door.roomIn = roomIn
+    return door
+end
+
+function Door.add(door)
+    table.insert(Door.DOORS, door)
+end
+
+Room = {
+    MAX_WIDTH = 6,
+    MAX_HEIGHT = 6,
+    MIN_WIDTH = 2,
+    MIN_HEIGHT = 2,
+    ROOMS = {}
+}
+Room.__index = Room
+
+function Room.new(x, y, width, height)
+    local room = {}
+    setmetatable(room, Room)
+    room.id = #Room.ROOMS + 1
+    room.x = x
+    room.y = y
+    room.width = width
+    room.height = height
+    room.neighbors = {}
+    room.parents = {}
+    room.children = {}
+    room.doors = {}
+    return room
+end
+
+function Room.add(room)
+    table.insert(Room.ROOMS, room)
+end
+
+function Room:intersecting(other)
+    return self.x < other.x + other.width and self.x + self.width > other.x and self.y < other.y + other.height and self.y + self.height > other.y
+end
+
+function Room:containsPoint(p)
+    return p.x >= self.x and p.x <= self.x + self.width and p.y >= self.y and p.y <= self.y + self.height
+end
+
+function Room.findPossibleSpace()
+    local tmpRoom = Room.new(x, y, Room.MIN_WIDTH, Room.MIN_HEIGHT)
+    for y = 0, Space.MAX_HEIGHT - Room.MIN_HEIGHT do
+        for x = 0, Space.MAX_WIDTH - Room.MIN_WIDTH do
+            tmpRoom.x = x
+            tmpRoom.y = y
+            local flag = true
+            for i, room in ipairs(Room.ROOMS) do
+                if room:intersecting(tmpRoom) then
+                    flag = false
+                    break
+                end
+            end
+            if flag then return {x = x, y = y} end
+        end
+    end
+    return nil
+end
+
+function Room.overlappingOthers(room)
+    for i, other in ipairs(Room.ROOMS) do
+        if room:intersecting(other) then return true end
+    end   
+    return false
+end
+
+function Room.overlappingOthersPoint(p)
+    for i, room in ipairs(Room.ROOMS) do
+        if p.x >= room.x and p.x <= room.x + room.width and p.y >= room.y and p.y <= room.y + room.height then return true end
+    end
+    return false
+end
+
+function Room.outsideSpace(room)
+    return room.x < 0 or room.y < 0 or room.x + room.width > Space.MAX_WIDTH or room.y + room.height > Space.MAX_HEIGHT
+end
+
+function Room.outsideSpacePoint(p)
+    return p.x < 0 or p.x > Space.MAX_WIDTH or p.y < 0 or p.y > Space.MAX_HEIGHT
+end
+
+function Room.connectRooms()
+    for i, room1 in ipairs(Room.ROOMS) do
+        for j, room2 in ipairs(Room.ROOMS) do
+            if i == j then continue end
+            if #room2.parents >= 1 then continue end
+            if room1.x + room1.width == room2.x then
+                if room1.y < room2.y + room2.height and room1.y + room1.height > room2.y then
+                    if not room1.neighbors[j] then room1.neighbors[j] = room2 end
+                    if not room2.neighbors[i] then room2.neighbors[i] = room1 end
+                    if not room1.children[j] then room1.children[j] = room2 end
+                    if not room2.parents[i] then room2.parents[i] = room1 end
+                end
+            end
+            if room1.y + room1.height == room2.y then
+                if room1.x < room2.x + room2.width and room1.x + room1.width > room2.x then
+                    if not room1.neighbors[j] then room1.neighbors[j] = room2 end
+                    if not room2.neighbors[i] then room2.neighbors[i] = room1 end
+                    if not room1.children[j] then room1.children[j] = room2 end
+                    if not room2.parents[i] then room2.parents[i] = room1 end
+                end
+            end
+        end
+    end
+end
+
+function Room.generateDoors()
+
+    --Generate doors for children
+    for i, room in ipairs(Room.ROOMS) do
+        
+        for j, child in pairs(room.children) do
+        
+            local door = Door.new(0, 0, 0, child, room)
+        
+            --Calculate bounds for child
+            if child.x == room.x + room.width then
+                local maxY = math.max(room.y, child.y) + 1
+                local minY2 = math.min(room.y + room.height, child.y + child.height)
+                
+                door.x = child.x - 1
+                door.y = math.random(maxY, minY2) - 1
+                door.dir = 0
+            else
+                local maxX = math.max(room.x, child.x) + 1
+                local minX2 = math.min(room.x + room.width, child.x + child.width)
+                
+                door.x = math.random(maxX, minX2) - 1
+                door.y = child.y - 1
+                door.dir = 1
+            end
+            
+            Door.add(door)
+            table.insert(room.doors, door)
+        
+        end
+        
+    end
+    
+    --Now add doors to parents if the children don't have parent doors
+    for i, room in ipairs(Room.ROOMS) do
+        
+        if i == 1 then continue end --Skip the first door, we have a special case for this door later
+        
+        
+        
+    end
+end
+
+function Room.generateWalls()
+    for i, room in ipairs(Room.ROOMS) do
+        for x = room.x, room.x + room.width - 1 do
+            
+            if Room.outsideSpacePoint({x = x, y = room.y - 1}) then
+                Wall.addOutside(Wall.new(x, room.y, 3, nil))
+            end
+            
+            if Room.outsideSpacePoint({x = x, y = room.y + room.height + 1}) then
+                Wall.addOutside(Wall.new(x, room.y + room.height - 1, 1, nil))
+            end
+            
+            if not Room.overlappingOthersPoint({x = x + 0.5, y = room.y - 0.5}) then
+                Wall.addOutside(Wall.new(x, room.y, 3, nil))
+            end
+            
+            if not Room.overlappingOthersPoint({x = x + 0.5, y = room.y + room.height + 0.5}) then
+                Wall.addOutside(Wall.new(x, room.y + room.height - 1, 1, nil))
+            end
+            
+            Wall.addInside(Wall.new(x, room.y, 3, room))
+            Wall.addInside(Wall.new(x, room.y + room.height - 1, 1, room))
+            
+        end
+        
+        for y = room.y, room.y + room.height - 1  do
+            
+            if Room.outsideSpacePoint({x = room.x - 1, y = y}) then
+                Wall.addOutside(Wall.new(room.x, y, 2, nil))
+            end
+            
+            if Room.outsideSpacePoint({x = room.x + room.width + 1, y = y}) then
+                Wall.addOutside(Wall.new(room.x + room.width - 1, y, 0, nil))
+            end
+            
+            if not Room.overlappingOthersPoint({x = room.x - 0.5, y = y + 0.5}) then
+                Wall.addOutside(Wall.new(room.x, y, 2, nil))
+            end
+            
+            if not Room.overlappingOthersPoint({x = room.x + room.width + 0.5, y = y + 0.5}) then
+                Wall.addOutside(Wall.new(room.x + room.width - 1, y, 0, nil))
+            end
+            
+            Wall.addInside(Wall.new(room.x, y, 2, nil))
+            Wall.addInside(Wall.new(room.x + room.width - 1, y, 0, nil))
+            
+        end
+    end
+end
+
+--[[
+
+props = {}
+
+function populatePropArray()
+
+
+
+end
+
+hook.add("think", "generateRoom", function()
+
+    local pos = Room.findPossibleSpace()
+    
+    if pos == nil then
+        hook.remove("think", "generateRoom")
+        
+        Room.connectRooms()
+        Room.generateDoors()
+        Room.generateWalls()
+        
+        hook.add("think", "populatePropArray", populatePropArray)
+        
+        return
+    end
+    
+    local room = Room.new(pos.x, pos.y, math.random(Room.MIN_WIDTH, Room.MAX_WIDTH), math.random(Room.MIN_HEIGHT, Room.MAX_HEIGHT))
+    
+    if Room.overlappingOthers(room) then return end
+    if Room.outsideSpace(room) then return end
+    
+    Room.add(room)
+    
+end
+]]--
+
+-- CLIENT SIDE CODE --
+hook.add("think", "generateRoom", function()
+
+    local pos = Room.findPossibleSpace()
+    
+    if pos == nil then
+        hook.remove("think", "generateRoom")
+        
+        Room.connectRooms()
+        Room.generateDoors()
+        Room.generateWalls()
+        
+        return
+    end
+    
+    local room = Room.new(pos.x, pos.y, math.random(Room.MIN_WIDTH, Room.MAX_WIDTH), math.random(Room.MIN_HEIGHT, Room.MAX_HEIGHT))
+    
+    if Room.overlappingOthers(room) then return end
+    if Room.outsideSpace(room) then return end
+    
+    Room.add(room)
+    
+end)
+
+hook.add("render", "drawRooms", function()
+
+    local scaleX = 512 / Space.MAX_WIDTH
+    local scaleY = 512 / Space.MAX_HEIGHT
+
+    for i, room in ipairs(Room.ROOMS) do
+        
+        render.setColor(Color(255, 255, 255))
+        render.drawRect(room.x * scaleX, room.y * scaleY, room.width * scaleX, room.height * scaleY)
+        render.setColor(Color(0, 0, 0))
+        render.drawRectOutline(room.x * scaleX, room.y * scaleY, room.width * scaleX, room.height * scaleY)
+        
+        local xCenter = (room.x + room.width / 2) * scaleX
+        local yCenter = (room.y + room.height / 2) * scaleY
+        
+        render.drawText(xCenter, yCenter, "Room #" .. i, 1)
+        
+    end
+    
+    for i, room in ipairs(Room.ROOMS) do
+        local xCenter = (room.x + room.width / 2) * scaleX
+        local yCenter = (room.y + room.height / 2) * scaleY
+        
+        render.setColor(Color(255, 0, 0))
+        for j, childRoom in pairs(room.children) do
+        
+            local cxCenter = (childRoom.x + childRoom.width / 2) * scaleX
+            local cyCenter = (childRoom.y + childRoom.height / 2) * scaleY
+            
+            render.drawLine(xCenter, yCenter + 5, cxCenter, cyCenter + 5)
+        
+        end
+    end
+    
+    render.setColor(Color(0, 100, 255))
+    for i, door in ipairs(Door.DOORS) do
+    
+        local x = door.x + 0.5 + math.cos(door.dir / 2 * math.pi) * 0.5
+        local y = door.y + 0.5 + math.sin(door.dir / 2 * math.pi) * 0.5
+        
+        render.drawRect(x * scaleX - 5, y * scaleY - 5, 10, 10)
+    
+    end
+    
+    render.setColor(Color(255, 100, 0))
+    for i, wall in ipairs(Wall.OUTSIDE_WALLS) do
+    
+        local x = wall.x + 0.5 + math.cos(wall.dir / 2 * math.pi) * 0.5
+        local y = wall.y + 0.5 + math.sin(wall.dir / 2 * math.pi) * 0.5
+        
+        render.drawRect(x * scaleX - 5, y * scaleY - 5, 10, 10)
+    
+    end
+    
+    render.setColor(Color(0, 255, 0))
+    for i, wall in ipairs(Wall.INSIDE_WALLS) do
+    
+        local x = wall.x + 0.5 + math.cos(wall.dir / 2 * math.pi) * 0.3
+        local y = wall.y + 0.5 + math.sin(wall.dir / 2 * math.pi) * 0.3
+        
+        render.drawRect(x * scaleX - 5, y * scaleY - 5, 10, 10)
+    
+    end
+
+end)
+

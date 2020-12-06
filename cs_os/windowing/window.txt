@@ -1,0 +1,213 @@
+local GL = require("../graphics/cs_gl.txt")
+local FileSystem = require("../filesystem/filesystem.txt")
+
+local Window = {
+    minimumWidth = 4,
+    minimumHeight = 2
+}
+do
+    Window.__index = Window
+    setmetatable(Window, {
+        __call = function(self, x, y, width, height, title)
+            local window = { x = x, y = y, width = width, height = height, title = title, state = "default" }
+            setmetatable(window, Window)
+            return window
+        end
+    })
+    
+    function Window:onKeyDown(key) end
+    
+    function Window:onMouseClick(x, y) end
+    
+    function Window:update() end
+    
+    function Window:render(isHardwareRefresh) end
+    
+    function Window:drawToDesktop(stencilNumber, isHardwareRefresh)
+        if self.state == "minimized" then return end
+    
+        GL.setStencilWrite(stencilNumber)
+        GL.setGlobalOffset(self.x + 1, self.y + 1)
+        self:render(isHardwareRefresh)
+        GL.setGlobalOffset(0, 0)
+        --GL.drawRect(math.random(0, 60), math.random(0, 36), math.random(1, 20), math.random(1, 20), math.random(1000, 999000))
+    end
+        
+    function Window:drawToDesktopFull(stencilNumber)
+        if self.state == "minimized" then return end
+    
+        GL.clearStencil(self.x, self.y, self.width, self.height, stencilNumber)
+        GL.setStencilWrite(stencilNumber)
+        GL.drawRectOutline(self.x, self.y, self.width, self.height, self.desktop.accentColor)
+        GL.drawRect(self.x + 1, self.y + 1, self.width - 2, self.height - 2, 999000)
+        GL.drawText(self.x + self.width - 1, self.y, "X", 900999)
+        GL.drawText(self.x + self.width - 2, self.y, "^", 999)
+        GL.drawText(self.x + self.width - 3, self.y, "_", 999)
+        GL.drawText(self.x + 1, self.y, self.title:sub(1, self.width - 4), 999)
+        GL.clearStencil(self.x, self.y, self.width, self.height, 0)
+        GL.clearStencil(self.x + 1, self.y + 1, self.width - 2, self.height - 2, stencilNumber)
+        self:drawToDesktop(stencilNumber, true)
+    end
+end
+
+local StartWindow = {}
+Window.StartWindow = StartWindow
+do
+    StartWindow.__index = function(tbl, k) return rawget(StartWindow, k) or Window[k] end
+    setmetatable(StartWindow, {
+        __call = function(self, x, y, w, h, title, selections)
+            
+            local window = Window(x, y, w, h, title)
+            setmetatable(window, StartWindow)
+            
+            window.selections = selections
+            
+            return window
+            
+        end
+    })
+    
+    function StartWindow:onMouseClick(cursorX, cursorY)
+        if cursorY + 1 <= #self.selections then
+            self.desktop.onMenuItemSelected(self.selections[cursorY + 1])
+        end
+    end
+    
+    function StartWindow:render(isHardwareRefresh)
+        for k, v in ipairs(self.selections) do
+            GL.drawText(0, k - 1, v, 111)
+        end
+    end
+    
+    function StartWindow:drawToDesktopFull(stencilNumber)
+        GL.clearStencil(self.x, self.y, self.width, self.height, stencilNumber)
+        GL.setStencilWrite(stencilNumber)
+        GL.drawRectOutline(self.x, self.y, self.width, self.height, 777111)
+        GL.drawRect(self.x + 1, self.y + 1, self.width - 2, self.height - 2, 999000)
+        GL.drawText(self.x + 1, self.y, self.title:sub(1, self.width - 4), 111)
+        GL.clearStencil(self.x, self.y, self.width, self.height, 0)
+        GL.clearStencil(self.x + 1, self.y + 1, self.width - 2, self.height - 2, stencilNumber)
+        self:drawToDesktop(stencilNumber, true)
+    end
+end
+
+local OpenFileWindow = {}
+Window.OpenFileWindow = OpenFileWindow
+do
+    OpenFileWindow.__index = function(tbl, k) return rawget(OpenFileWindow, k) or Window[k] end
+    setmetatable(OpenFileWindow, {
+        __call = function(self, desktop, callback, errCallback)
+            
+            local width = math.max(desktop.width / 2, 26)
+            local height = 7
+            
+            local window = Window(math.floor((desktop.width - width) / 2), math.floor((desktop.height - height) / 2), width, height, "Open File...")
+            window.filename = "cs_os/"
+            window.callback = callback
+            window.errorCallback = errCallback
+            window.desktop = desktop
+            
+            setmetatable(window, OpenFileWindow)
+            
+            return window
+        end
+    })
+    
+    function OpenFileWindow:submit()
+        
+        FileSystem.readFile(self.filename, self.callback, self.errorCallback)
+        table.removeByValue(self.desktop.windows, self)
+        self.desktop.needsHardwareRefresh = true
+        
+    end
+    
+    function OpenFileWindow:onMouseClick(x, y)
+        if y == self.height - 4 then
+            if x >= self.width - 9 and x < self.width - 3 then
+                self:submit()
+            end
+        end
+    end
+    
+    function OpenFileWindow:onKeyDown(key)
+    
+        if key == 127 then self.filename = self.filename:sub(1, -2) end
+        
+        if key == 10 or key == 13 then self:submit() end
+        
+        if key >= 32 and key < 127 then
+            self.filename = self.filename .. string.char(key)
+        end
+    
+    end
+    
+    function OpenFileWindow:render()
+        
+        GL.drawRect(1, 1, self.width - 4, 1, 777111)
+        GL.drawText(1, 1, self.filename:sub(1, self.width - 4), 777111)
+        
+        GL.drawText(self.width - 9, self.height - 4, "[Open]", 777111)
+        
+    end
+end
+
+local SaveFileWindow = {}
+Window.SaveFileWindow = SaveFileWindow
+do
+    SaveFileWindow.__index = function(tbl, k) return rawget(SaveFileWindow, k) or Window[k] end
+    setmetatable(SaveFileWindow, {
+        __call = function(self, desktop, data)
+            
+            local width = math.max(desktop.width / 2, 26)
+            local height = 7
+            
+            local window = Window(math.floor((desktop.width - width) / 2), math.floor((desktop.height - height) / 2), width, height, "Save File...")
+            window.filename = "cs_os/"
+            window.data = data
+            window.desktop = desktop
+            
+            setmetatable(window, SaveFileWindow)
+            
+            return window
+        end
+    })
+    
+    function SaveFileWindow:submit()
+    
+        FileSystem.writeFile(self.filename, self.data)
+        table.removeByValue(self.desktop.windows, self)
+        self.desktop.needsHardwareRefresh = true
+        
+    end
+    
+    function SaveFileWindow:onMouseClick(x, y)
+        if y == self.height - 4 then
+            if x >= self.width - 9 and x < self.width - 3 then
+                self:submit()
+            end
+        end
+    end
+    
+    function SaveFileWindow:onKeyDown(key)
+    
+        if key == 127 then self.filename = self.filename:sub(1, -2) end
+        
+        if key == 10 or key == 13 then self:submit() end
+        
+        if key >= 32 and key < 127 then
+            self.filename = self.filename .. string.char(key)
+        end
+    
+    end
+    
+    function SaveFileWindow:render()
+        
+        GL.drawRect(1, 1, self.width - 4, 1, 777111)
+        GL.drawText(1, 1, self.filename:sub(1, self.width - 4), 777111)
+        
+        GL.drawText(self.width - 9, self.height - 4, "[Save]", 777111)
+        
+    end
+end
+
+return Window

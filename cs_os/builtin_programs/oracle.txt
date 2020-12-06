@@ -1,0 +1,38 @@
+local Window = require("../windowing/window.txt")
+local GL = require("../graphics/cs_gl.txt")
+local FileSystem = require("../filesystem/filesystem.txt")
+
+local Oracle = {}
+Oracle.__index = function(tbl, k) return rawget(Oracle, k) or Window[k] end
+setmetatable(Oracle, {
+    __call = function(self, x, y, width, height)
+        local window = Window(x, y, width, height, "Oracle")
+        window.outputs = {}
+        window.oldOutputCount = 0
+        setmetatable(window, Oracle)
+        return window
+    end
+})
+
+function Oracle:onKeyDown(key)
+    table.insert(window.outputs, self.desktop.sharedData.oracleText[math.random(1, 99999)]:sub(6))
+end
+
+function Oracle:render(isHardwareRefresh)
+    local yOffset = math.max(0, #self.outputs - self.height + 2)
+    if #self.outputs ~= self.oldOutputCount then
+        self.oldOutputCount = #self.outputs
+        GL.drawRect(0, 0, self.width - 2, self.height - 2, 999000)
+    end
+    for y = 1, self.height - 2 do
+        if self.outputs[y + yOffset] then
+            GL.drawText(0, y - 1, self.outputs[y + yOffset], 111)
+        end
+    end
+end
+
+return {
+    name = "Oracle",
+    category = "Builtins",
+    program = Oracle
+}

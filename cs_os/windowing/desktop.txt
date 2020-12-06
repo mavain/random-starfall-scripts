@@ -1,0 +1,431 @@
+local GL = require("../graphics/cs_gl.txt")
+local Window = require("window.txt")
+
+local function getCursorPos(ply)
+    local tr = ply:getEyeTrace()
+    local scr = wire.ports.TopLeftScreen:entity()
+    
+    local rawPos = scr:worldToLocal(tr.HitPos)
+    
+    local min = Vector(-13.792965888977, -23.50439453125, 19.808660507202)
+    local max = Vector(13.948243141174, 22.881359100342, 19.808828353882)
+    
+    local pos = Vector(math.remap(rawPos.y, min.y, max.y, 0, 30), math.remap(rawPos.x, min.x, max.x, 0, 18))
+    
+    return Vector(math.floor(pos.x), math.floor(pos.y), 0)
+end
+
+local Desktop = {}
+Desktop.__index = Desktop
+setmetatable(Desktop, {
+    __call = function(self, width, height)
+        local desktop = { 
+            width = width, 
+            height = height,
+            needsHardwareRefresh = true,
+            interactingWindowInfo = {},
+            activeWindow = nil,
+            user = owner(),
+            userIsUsing = false,
+            menuWindows = {},
+            menuItems = {},
+            windows = {},
+            accentColor = 27000,
+            sharedData = {}
+        }
+        setmetatable(desktop, Desktop)
+        return desktop
+    end
+})
+
+function Desktop:setBackgroundImage(img)
+    self.backgroundImage = img
+    self.needsHardwareRefresh = true
+end
+
+function Desktop:addMenuItem(item)
+    table.insert(self.menuItems, item)
+end
+
+function Desktop:addWindow(window)
+    table.insert(self.windows, window)
+    
+    -- HACK --
+    self.activeWindow = window
+    window.desktop = self
+    window:drawToDesktopFull(#self.windows * 2, true)
+    GL.clearStencil(0, self.height - 1, self.width, 1, #self.windows * 2 + 2)
+    
+    return window
+end
+
+function Desktop:addMenuWindow(window)
+    table.insert(self.menuWindows, window)
+    
+    self.activeWindow = window
+    window.desktop = self
+    window:drawToDesktopFull(1000 + #self.menuWindows * 2, true)
+    GL.clearStencil(0, self.height - 1, self.width, 1, #self.menuWindows * 2 + 2)
+    
+    return window
+    
+end
+
+function Desktop:sendKeyDown(key)
+    if not self.activeWindow then return end
+    
+    self.activeWindow:onKeyDown(key)
+end
+
+function Desktop:pickWindow(cursorPos)
+    local mostFrontWindowIndex = nil
+                
+    for windowIndex, window in ipairs(self.windows) do
+        if window.state == "minimized" then continue end
+        if window.x <= cursorPos.x and window.x + window.width > cursorPos.x and
+           window.y <= cursorPos.y and window.y + window.height > cursorPos.y then
+            mostFrontWindowIndex = windowIndex
+        end
+    end
+    
+    if mostFrontWindowIndex then
+        return mostFrontWindowIndex, self.windows[mostFrontWindowIndex]
+    end
+    
+    return nil
+end
+
+function Desktop:pickMenuWindow(cursorPos)
+    local mostFrontWindowIndex = nil
+
+    for windowIndex, window in ipairs(self.menuWindows) do
+        if window.x <= cursorPos.x and window.x + window.width > cursorPos.x and
+           window.y <= cursorPos.y and window.y + window.height > cursorPos.y then
+            mostFrontWindowIndex = windowIndex
+        end
+    end
+    
+    if mostFrontWindowIndex then
+        return mostFrontWindowIndex, self.menuWindows[mostFrontWindowIndex]
+    end
+    
+    return nil
+end
+
+function Desktop:bringToFront(window)
+    if type(window) == "table" then
+        table.removeByValue(self.windows, window)
+        table.insert(self.windows, window)
+    else
+        table.insert(self.windows, table.remove(self.windows, window))
+    end
+end
+
+function Desktop:bringMenuToFront(window)
+    if type(window) == "table" then
+        table.removeByValue(self.menuWindows, window)
+        table.insert(self.menuWindows, window)
+    else
+        table.insert(self.menuWindows, table.remove(self.menuWindows, window))
+    end
+end
+
+function Desktop:interactWithWindow(windowIndex, window, cursorPos)
+    if cursorPos.y == window.y then -- Titlebar
+        if cursorPos.x == window.x + window.width - 1 then -- Exit
+            table.remove(self.windows, windowIndex)
+            self.needsHardwareRefresh = true
+        elseif cursorPos.x == window.x + window.width - 2 then -- Maximize
+            window.x = 0
+            window.y = 0
+            window.width = self.width
+            window.height = self.height - 1
+            
+            self:bringToFront(windowIndex)
+            
+            self.activeWindow = window
+            self.needsHardwareRefresh = true
+        elseif cursorPos.x == window.x + window.width - 3 then -- Minimize
+            window.state = "minimized"
+            self.needsHardwareRefresh = true
+        else -- Other general area
+            self.interactingWindowInfo.type = "move"
+            self.interactingWindowInfo.window = window
+            self.interactingWindowInfo.cursorOffsetX = cursorPos.x - window.x
+            self.interactingWindowInfo.cursorOffsetY = cursorPos.y - window.y
+        
+            self:bringToFront(windowIndex)
+        end
+    elseif cursorPos.y == window.y + window.height - 1 and
+           cursorPos.x == window.x + window.width - 1 then -- Corner region
+        self.interactingWindowInfo.type = "resizeWH"
+        self.interactingWindowInfo.window = window
+        
+        self:bringToFront(windowIndex)
+    else
+        if windowIndex ~= #self.windows then
+            self:bringToFront(windowIndex)
+            self.needsHardwareRefresh = true
+        end
+        self.activeWindow = window
+        if not self.userIsUsing then
+            if window.x + 1 <= cursorPos.x and window.x + window.width - 1 > cursorPos.x and
+               window.y + 1 <= cursorPos.y and window.y + window.height - 1 > cursorPos.y then
+                self.activeWindow:onMouseClick(cursorPos.x - window.x - 1, cursorPos.y - window.y - 1)
+                self.userIsUsing = true
+            end
+        end
+    end
+end
+
+function Desktop:interactWithMenuWindow(windowIndex, window, cursorPos)
+    if windowIndex ~= #self.menuWindows then
+        table.insert(self.menuWindows, table.remove(self.menuWindows, windowIndex))
+        self.needsHardwareRefresh = true
+    end
+    self.activeWindow = window
+    if not self.userIsUsing then
+        if window.x + 1 <= cursorPos.x and window.x + window.width - 1 > cursorPos.x and
+        window.y + 1 <= cursorPos.y and window.y + window.height - 1 > cursorPos.y then
+            self.activeWindow:onMouseClick(cursorPos.x - window.x - 1, cursorPos.y - window.y - 1)
+            self.userIsUsing = true
+        end
+    end
+end
+
+function Desktop:updateUserInput()
+    local cursorPos = getCursorPos(self.user)
+
+    if not self.interactingWindowInfo.window then
+        if self.user:keyDown(32) and not self.userIsUsing then
+        
+            if cursorPos.x < 0 or cursorPos.x >= self.width or cursorPos.y < 0 or cursorPos.y >= self.height then
+                self.userIsUsing = true
+                return
+            end
+                
+            if cursorPos.y == self.height - 1 then -- Taskbar
+                if cursorPos.x >= 5 then -- Selecting Task
+                    
+                    local id = #self.windows - math.floor((cursorPos.x - 5) / 10)
+                    if id > #self.windows then return end
+                    
+                    self.activeWindow = self.windows[id]
+                    if self.activeWindow.state == "minimized" then self.activeWindow.state = "default" end
+                    self:bringToFront(id)
+                    
+                    self.menuWindows = {}
+                    self.needsHardwareRefresh = true
+                    self.userIsUsing = true
+                    return
+                    
+                else
+                    local yPos = math.floor(self.height / 2)
+                    self:addMenuWindow(Window.StartWindow(0, yPos, 15, self.height - yPos - 1, "Menu", self.menuItems))
+                    self.userIsUsing = true
+                    return
+                end
+            end
+            
+            local menuIndex, menuWindow = self:pickMenuWindow(cursorPos)
+            if menuIndex then
+                self:interactWithMenuWindow(menuIndex, menuWindow, cursorPos)
+                return
+            else
+                if #self.menuWindows > 0 then
+                    self.menuWindows = {}
+                    self.needsHardwareRefresh = true
+                end
+            end
+        
+            local windowIndex, window = self:pickWindow(cursorPos)
+            if windowIndex then
+                self:interactWithWindow(windowIndex, window, cursorPos)
+            else
+                self.activeWindow = nil
+            end
+        end
+    else
+        if not self.user:keyDown(32) then
+            
+            self.activeWindow = self.interactingWindowInfo.window
+            
+            if self.interactingWindowInfo.type == "move" then
+                local window = self.interactingWindowInfo.window
+                local cursorOffsetX = self.interactingWindowInfo.cursorOffsetX
+                local cursorOffsetY = self.interactingWindowInfo.cursorOffsetY
+                
+                window.x = cursorPos.x - cursorOffsetX
+                window.y = cursorPos.y - cursorOffsetY
+            
+                self.interactingWindowInfo.window = nil
+                self.needsHardwareRefresh = true
+            elseif self.interactingWindowInfo.type == "resizeWH" then
+                local window = self.interactingWindowInfo.window
+                
+                window.width = math.max(window.minimumWidth, cursorPos.x - window.x + 1)
+                window.height = math.max(window.minimumHeight, cursorPos.y - window.y + 1)
+                
+                self.interactingWindowInfo.window = nil
+                self.needsHardwareRefresh = true
+            end
+        end
+    end
+    
+    self.userIsUsing = self.user:keyDown(32)
+end
+
+function Desktop:update()
+local cursorPos = getCursorPos(self.user)
+    if self.interactingWindowInfo.window then
+        if self.interactingWindowInfo.type == "move" then
+            local window = self.interactingWindowInfo.window
+            local cursorOffsetX = self.interactingWindowInfo.cursorOffsetX
+            local cursorOffsetY = self.interactingWindowInfo.cursorOffsetY
+                
+            window.x = cursorPos.x - cursorOffsetX
+            window.y = cursorPos.y - cursorOffsetY
+        elseif self.interactingWindowInfo.type == "resizeWH" then
+            local window = self.interactingWindowInfo.window
+            
+            window.width = math.max(window.minimumWidth, cursorPos.x - window.x + 1)
+            window.height = math.max(window.minimumHeight, cursorPos.y - window.y + 1)
+        end
+    end
+
+    for k, v in ipairs(self.windows) do
+        v.desktop = self
+        v:update()
+        coroutine.yield()
+    end
+end
+
+function Desktop:renderTaskbar(cursorPos)
+    local textScrollSpeed = 4
+
+    GL.setStencilWrite(#self.windows * 2 + 2)
+
+    GL.setGlobalOffset(0, self.height - 1)
+    
+    GL.drawText(0, 0, "Menu", self.accentColor + 999)
+    
+    if (not self.interactingWindowInfo.window) and cursorPos.y == self.height - 1 and cursorPos.x >= 5 then
+        for id, window in ipairs(self.windows) do
+            local x = 5 + (#self.windows - id) * 10
+            
+            local windowText = window.title:sub(1, 8)
+            if #window.title > 8 then
+                local curtime = math.floor(timer.curtime() * textScrollSpeed) % #window.title + 1
+                local double = window.title .. " " .. window.title
+                windowText = double:sub(curtime, curtime + 7)
+            end
+            
+            if cursorPos.x >= x and cursorPos.x < x + 10 then
+                GL.drawText(x, 0, "[" .. windowText .. "]", 1333999)
+            else
+                GL.drawText(x, 0, "[" .. windowText .. "]", 555888)
+            end
+        end
+    else
+        for id, window in ipairs(self.windows) do
+            local windowText = window.title:sub(1, 8)
+            if #window.title > 8 then
+                local curtime = math.floor(timer.curtime() * textScrollSpeed) % #window.title + 1
+                local double = window.title .. " " .. window.title
+                windowText = double:sub(curtime, curtime + 7)
+            end
+            GL.drawText(5 + (#self.windows - id) * 10, 0, "[" .. windowText .. "]", self.accentColor + 999)
+        end
+    end
+    
+    GL.setGlobalOffset(0, 0)
+end
+
+function Desktop:renderTaskbarFull(cursorPos)
+    GL.clearStencil(0, self.height - 1, self.width, 1, #self.windows * 2 + 2)
+    GL.setStencilWrite(#self.windows * 2 + 2)
+    GL.setGlobalOffset(0, self.height - 1)
+    GL.drawRect(0, 0, self.width, 1, self.accentColor)
+    self:renderTaskbar(cursorPos)
+end
+
+function Desktop:render()
+    local cursorPos = getCursorPos(self.user)
+    GL.setCursorPos(cursorPos.x, cursorPos.y)
+    
+    GL.clear()
+    
+    if self.backgroundImage then
+        GL.setStencilWrite(-1)
+        GL.drawImageRawCharacters(0, 0, self.width, self.height, self.backgroundImage)
+    end
+    
+    for id, window in ipairs(self.windows) do
+        window:drawToDesktopFull(id * 2, true)
+    end
+        
+    for id, window in ipairs(self.menuWindows) do
+        window:drawToDesktopFull(1000 + id * 2, true)
+    end
+    
+    self:renderTaskbarFull(cursorPos)
+
+    --[[
+
+    if self.needsHardwareRefresh then
+        GL.clear()
+        
+        if self.backgroundImage then
+            GL.setStencilWrite(-1)
+            GL.drawImageRawCharacters(0, 0, self.width, self.height, self.backgroundImage)
+        end
+        
+        for id, window in ipairs(self.windows) do
+            window:drawToDesktopFull(id * 2, true)
+        end
+        
+        for id, window in ipairs(self.menuWindows) do
+            window:drawToDesktopFull(1000 + id * 2, true)
+        end
+        
+        self:renderTaskbarFull(cursorPos)
+        
+        self.needsHardwareRefresh = false
+    else
+        for id, window in ipairs(self.windows) do
+            window:drawToDesktop(id * 2, false)
+        end
+        
+        for id, window in ipairs(self.menuWindows) do
+            window:drawToDesktop(1000 + id * 2, false)
+        end
+        
+        self:renderTaskbar(cursorPos)
+    end
+    
+    if self.interactingWindowInfo.window then
+        GL.setStencilWrite(-1)
+        if self.interactingWindowInfo.type == "move" then
+            local window = self.interactingWindowInfo.window
+            local cursorOffsetX = self.interactingWindowInfo.cursorOffsetX
+            local cursorOffsetY = self.interactingWindowInfo.cursorOffsetY
+                
+            window.x = cursorPos.x - cursorOffsetX
+            window.y = cursorPos.y - cursorOffsetY
+            --GL.drawRectOutline(cursorPos.x - cursorOffsetX, cursorPos.y - cursorOffsetY, window.width, window.height, math.random(1000, 999999))
+        elseif self.interactingWindowInfo.type == "resizeWH" then
+            local window = self.interactingWindowInfo.window
+            
+            window.width = math.max(window.minimumWidth, cursorPos.x - window.x + 1)
+            window.height = math.max(window.minimumHeight, cursorPos.y - window.y + 1)
+            
+            --GL.drawRectOutline(window.x, window.y, math.max(window.minimumWidth, cursorPos.x - window.x + 1), math.max(window.minimumHeight, cursorPos.y - window.y + 1), math.random(1000, 999999))
+        end
+        
+        GL.setStencilWrite(0)
+    end
+    
+    ]]--
+end
+
+return Desktop

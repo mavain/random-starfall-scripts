@@ -1,0 +1,370 @@
+--@name Mavain's Windowing Library
+--@author Mavain
+--@client
+
+local Window = {}
+do
+    Window.__index = Window
+    setmetatable(Window, {
+        __call = function(self, title, x, y, width, height)
+            local windowInstance = { title = title }
+            local flags = {
+                backgroundColor = Color(200, 200, 200)
+            }
+            windowInstance.flags = flags
+            windowInstance.glState = glState
+            setmetatable(windowInstance, Window)
+            
+            windowInstance:move(x, y)
+            windowInstance:resize(width, height)
+            
+            return windowInstance
+        end
+    })
+    
+    Window.GL = {}
+    
+    -- Global backbuffer
+    Window.GL.BACKBUFFER_RENDER_TARGET = "windowbackbuffer" .. string.sub(tostring(window), 8)
+    render.createRenderTarget(Window.GL.BACKBUFFER_RENDER_TARGET)
+    
+    function Window.GL.selectRenderTarget(rt)
+        if rt then
+            render.selectRenderTarget(rt)
+        else
+            render.selectRenderTarget(Window.GL.BACKBUFFER_RENDER_TARGET)
+        end
+    end
+    
+    function Window:move(x, y)
+        self.x = math.floor(x)
+        self.y = math.floor(y)
+        self.clientX = self.x + 4
+        self.clientY = self.y + 24
+    end
+    
+    function Window:resize(width, height)
+        height = math.floor(math.max(height, 28))
+        width = math.floor(math.max(width, 50))
+        self.width = width
+        self.height = height
+        self.clientWidth = width - 8
+        self.clientHeight = height - 28
+    end
+    
+    function Window:click(x, y)
+        if self.components then
+            local closestComponentIndex = -1
+            for i, component in ipairs(self.components) do
+                if x >= component.x and y >= component.y and x <= component.x + component.width and y <= component.y + component.height then
+                    closestComponentIndex = i
+                end
+            end
+            if closestComponentIndex == -1 then return end
+            local component = self.components[closestComponentIndex]
+            component:click(x - component.x, y - component.y)
+            self.currentlyUsedComponent = component
+        end    
+    end
+    function Window:release(x, y)
+        if self.currentlyUsedComponent then
+            self.currentlyUsedComponent:release(x, y)
+        end
+    end
+    function Window:render(x, y)
+        render.setColor(self.flags.backgroundColor)
+        render.drawRect(0, 0, self.clientWidth, self.clientHeight)
+        if self.components then
+            for i, component in ipairs(self.components) do
+                component.parentWindow = self
+                component:render(x, y)
+            end
+        end
+    end
+    function Window:update(x, y) 
+        if self.components then
+            for i, component in ipairs(self.components) do
+                component.parentWindow = self
+                component:update(x, y)
+            end
+        end
+    end
+    
+    function Window:renderToDesktop()
+    
+        local render = render
+    
+        render.setColor(self.desktop.windowColor)
+        render.drawRect(self.x, self.y, self.width, self.height)
+        
+        render.setColor(self.flags.backgroundColor)
+        render.drawRect(self.x + 4, self.y + 24, self.width - 8, self.height - 28)
+    
+        render.setColor(Color(255, 0, 0))
+        render.drawRect(self.x + self.width - 24, self.y + 4, 20, 16)
+        
+        render.enableScissorRect(self.x, self.y, self.x + self.width, self.y + 24)
+        render.setColor(Color(255, 255, 255))
+        render.drawSimpleText(self.x + 4, self.y + 3, self.title)
+        render.disableScissorRect()
+
+        render.selectRenderTarget(self.GL.BACKBUFFER_RENDER_TARGET)
+        render.clear()
+        self:render()
+        render.selectRenderTarget(self.desktop.renderTargetID)
+        render.setRenderTargetTexture(self.GL.BACKBUFFER_RENDER_TARGET)
+        render.setColor(Color(255, 255, 255))
+        render.drawTexturedRectUV(self.clientX, self.clientY, self.clientWidth, self.clientHeight,
+                                  0, 0, self.clientWidth / 1024, self.clientHeight / 1024)
+        render.setRenderTargetTexture(nil)
+    
+    end
+end
+
+local Desktop = {}
+do
+    Desktop.__index = Desktop
+    setmetatable(Desktop, {
+        __call = function(self)
+            local desktopInstance = { windows = {}, cursorX = 0, cursorY = 0, maxFPS = 0, lastRenderTime = timer.curtime() }
+            desktopInstance.interactingWindow = {
+                interactionType = "none",
+                window = nil,
+                cursorOffsetX = 0,
+                cursorOffsetY = 0,
+            }
+            setmetatable(desktopInstance, Desktop)
+            return desktopInstance  
+        end
+    })
+    
+    function Desktop:updateCursor(cursorX, cursorY)
+        self.cursorX = cursorX
+        self.cursorY = cursorY
+    end
+    
+    function Desktop:windowInteractKeyPressed()
+        local closestWindowIndex = -1
+        for windowIndex, window in ipairs(self.windows) do
+            if self.cursorX >= window.x and self.cursorY >= window.y and self.cursorX <= window.x + window.width and self.cursorY <= window.y + window.height then
+                closestWindowIndex = windowIndex
+            end
+        end
+        if closestWindowIndex == -1 then return end
+        
+        local window = self.windows[closestWindowIndex]
+        if self.cursorY <= window.y + 24 then
+            if self.cursorX >= window.x + window.width - 24 and self.cursorX <= window.x + window.width - 4 then
+                if self.cursorY <= window.y + 16 then
+                    table.remove(self.windows, closestWindowIndex)
+                    return
+                end
+            end
+            self.interactingWindow.type = "move"
+            self.interactingWindow.window = window
+            self.interactingWindow.cursorOffsetX = self.cursorX - window.x
+            self.interactingWindow.cursorOffsetY = self.cursorY - window.y
+        elseif self.cursorX >= window.x + window.width - 12 and self.cursorX <= window.x + window.width then
+            if self.cursorY >= window.y + window.height - 12 and self.cursorY <= window.y + window.height then
+                self.interactingWindow.type = "resize"
+                self.interactingWindow.window = window
+                self.interactingWindow.cursorOffsetX = window.x + window.width - self.cursorX
+                self.interactingWindow.cursorOffsetY = window.y + window.height - self.cursorY
+            end
+        else
+            window:click(self.cursorX - window.x - 4, self.cursorY - window.y - 24)
+            self.interactingWindow.type = "none"
+            self.interactingWindow.window = window
+        end
+        table.insert(self.windows, table.remove(self.windows, closestWindowIndex))
+    end
+    
+    function Desktop:windowInteractKeyReleased()
+        if self.interactingWindow.type == "none" and self.interactingWindow.window then
+            local window = self.interactingWindow.window
+            window:release(self.cursorX - window.x - 4, self.cursorY - window.y - 24)
+        end
+        self.interactingWindow.window = nil
+    end
+    
+    function Desktop:handleInteractingWindow()
+        if not self.interactingWindow.window then return end
+        
+        local intWin = self.interactingWindow
+        
+        if intWin.type == "move" then
+            intWin.window:move(self.cursorX - intWin.cursorOffsetX, self.cursorY - intWin.cursorOffsetY)
+        end
+        
+        if intWin.type == "resize" then
+            intWin.window:resize(self.cursorX - intWin.window.x + intWin.cursorOffsetX, self.cursorY - intWin.window.y + intWin.cursorOffsetY)
+        end
+    end
+    
+    function Desktop:update()
+        self:handleInteractingWindow()
+        for k, v in ipairs(self.windows) do
+            v.desktop = self
+            v:update(self.cursorX - v.x - 4, self.cursorY - v.y - 24)
+        end
+    end
+    
+    function Desktop:render(desktopRenderTarget)
+        if self.maxFPS ~= 0 then
+            local time = timer.curtime()
+            if time - self.lastRenderTime < 1 / self.maxFPS then return end
+            self.lastRenderTime = time
+        end
+    
+        self.renderTargetID = desktopRenderTarget
+        render.selectRenderTarget(desktopRenderTarget)
+        render.clear()
+        for k, v in ipairs(self.windows) do
+            v.desktop = self
+            v:renderToDesktop(self)
+        end
+    end
+end
+
+local Components = {}
+do
+    
+    do
+        local Button = {}
+        Button.__index = Button
+        setmetatable(Button, {
+            __call = function(self, txt, x, y, width, height, click)
+                local buttonInstance = {
+                    x = x, 
+                    y = y, 
+                    width = width, 
+                    height = height, 
+                    text = txt, 
+                    onClick = click, 
+                    accentColor = Color(0, 100, 255), 
+                    clickedLastFrame = false
+                }
+                setmetatable(buttonInstance, Button)
+                return buttonInstance
+            end
+        })
+        
+        function Button:release(x, y)
+            self.clickedLastFrame = false
+        end
+        
+        function Button:update(x, y) end
+        
+        function Button:click(x, y)
+            self.clickedLastFrame = true
+            self:onClick(x, y)
+        end
+        
+        function Button:render(x, y)
+            render.setColor(self.clickedLastFrame and self.accentColor or Color(200, 200, 200))
+            render.drawRect(self.x, self.y, self.width, self.height)
+            render.setColor(Color(150, 150, 150))
+            render.drawRectOutline(self.x, self.y, self.width, self.height)
+            
+            render.setStencilEnable(true)
+            render.clearStencil()
+            render.clearStencilBufferRectangle(self.x, self.y,
+                                               self.x + self.width, self.y + self.height, 1)
+            render.setColor(Color(0, 0, 0))
+            render.drawSimpleText(self.x + self.width / 2, self.y + self.height / 2, self.text, 1, 1)
+            render.setStencilEnable(false)
+        end
+        
+        Components.Button = Button
+    end
+    
+    do
+        local Slider = {}
+        Slider.__index = Slider
+        setmetatable(Slider, {
+            __call = function(self, txt, x, y, width, height, onChange)
+                local sliderInstance = {
+                    x = x, 
+                    y = y, 
+                    width = width, 
+                    height = height, 
+                    text = txt,
+                    accentColor = Color(0, 100, 255), 
+                    isGrabbed = false,
+                    onChange = onChange,
+                    value = 0
+                }
+                setmetatable(sliderInstance, Slider)
+                return sliderInstance
+            end
+        })
+        
+        function Slider:release(x, y)
+            self.isGrabbed = false
+        end
+        function Slider:update(x, y)
+            if not self.isGrabbed then return end
+            self.value = math.min(math.max((x - self.x) / self.width, 0), 1)
+            self:onChange(self.value)
+        end
+        function Slider:click(x, y)
+            self.isGrabbed = true
+        end
+        
+        function Slider:render(x, y)
+            render.setColor(Color(75, 75, 75))
+            render.drawLine(self.x, self.y + self.height / 2, self.x + self.width, self.y + self.height / 2)
+            render.setColor(self.accentColor)
+            render.drawRect(self.x + self.value * (self.width - 8), self.y, 8, self.height)
+            render.setColor(Color(0, 0, 0))
+            render.drawSimpleText(self.x + self.width / 2, self.y, self.text, 1, 0)
+        end
+        
+        Components.Slider = Slider
+    end
+    
+    do
+        local CheckBox = {}
+        CheckBox.__index = CheckBox
+        setmetatable(CheckBox, {
+            __call = function(self, txt, x, y, width, height, onChange)
+                local checkBoxInstance = {
+                    x = x, 
+                    y = y, 
+                    width = width, 
+                    height = height, 
+                    text = txt,
+                    accentColor = Color(0, 100, 255),
+                    onChange = onChange,
+                    value = false
+                }
+                setmetatable(checkBoxInstance, CheckBox)
+                return checkBoxInstance
+            end
+        })
+        
+        function CheckBox:release(x, y) end
+        function CheckBox:update(x, y) end
+        
+        function CheckBox:click(x, y)
+            self.value = not self.value
+            self:onChange(self.value)
+        end
+        
+        function CheckBox:render(x, y)
+            render.setColor(Color(200, 200, 200))
+            render.drawRect(self.x, self.y, self.width, self.height)
+            render.setColor(self.value and self.accentColor or Color(100, 100, 100))
+            render.drawRect(self.x + 5, self.y + 5, self.width - 10, self.height - 10)
+            render.setColor(Color(150, 150, 150))
+            render.drawRectOutline(self.x, self.y, self.width, self.height)
+            render.setColor(Color(0, 0, 0))
+            render.drawSimpleText(self.x + self.width + 5, self.y + self.height / 2, self.text, 0, 1)
+        end
+        
+        Components.CheckBox = CheckBox
+    end
+    
+end
+
+return { Window = Window, Desktop = Desktop, Components = Components }

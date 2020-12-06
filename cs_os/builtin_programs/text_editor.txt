@@ -1,0 +1,297 @@
+local Window = require("../windowing/window.txt")
+local GL = require("../graphics/cs_gl.txt")
+local FileSystem = require("../filesystem/filesystem.txt")
+
+local ErrorWindow = {}
+ErrorWindow.__index = function(tbl, k) return rawget(ErrorWindow, k) or Window[k] end
+setmetatable(ErrorWindow, {
+    __call = function(self, x, y, width, height, errors)
+        local window = Window(x, y, width, height, "Errors")
+        window.errors = errors
+        setmetatable(window, ErrorWindow)
+        return window
+    end
+})
+function ErrorWindow:render(isHardwareRefresh)
+    for k, v in ipairs(self.errors) do
+        GL.drawText(0, k - 1, v, 911)
+    end
+end
+
+local OutputWindow = {}
+OutputWindow.__index = function(tbl, k) return rawget(OutputWindow, k) or Window[k] end
+setmetatable(OutputWindow, {
+    __call = function(self, x, y, width, height, outputs)
+        local window = Window(x, y, width, height, "Script Output")
+        window.outputs = outputs
+        window.oldOutputCount = #outputs
+        setmetatable(window, OutputWindow)
+        return window
+    end
+})
+function OutputWindow:render(isHardwareRefresh)
+    local yOffset = math.max(0, #self.outputs - self.height + 2)
+    if #self.outputs ~= self.oldOutputCount then
+        self.oldOutputCount = #self.outputs
+        GL.drawRect(0, 0, self.width - 2, self.height - 2, 999000)
+    end
+    for y = 1, self.height - 2 do
+        if self.outputs[y + yOffset] then
+            GL.drawText(0, y - 1, self.outputs[y + yOffset], 111)
+        end
+    end
+end
+
+local TextEditor = {}
+TextEditor.__index = function(tbl, k) return rawget(TextEditor, k) or Window[k] end
+setmetatable(TextEditor, {
+    __call = function(self, x, y, width, height)
+        local window = Window(x, y, width, height, "Text Editor")
+        
+        window.data = {
+            textLines = {
+                ""
+            },
+            scrollAmount = 0,
+            lineNumber = 1,
+            charNumber = 1,
+            needsRefresh = false,
+            updateLine = 0
+        }  
+        
+        setmetatable(window, TextEditor)
+        return window
+    end
+})
+
+function TextEditor:insertNewLine()
+    local data = self.data
+
+    local oldLineTxt = data.textLines[data.lineNumber]
+    
+    if data.charNumber == #oldLineTxt + 1 then
+        table.insert(data.textLines, data.lineNumber + 1, "")
+        data.lineNumber = data.lineNumber + 1
+        data.charNumber = 1
+        
+        data.needsRefresh = true
+        return
+    end
+    
+    if data.charNumber == 1 then
+        table.insert(data.textLines, data.lineNumber, "")
+        data.lineNumber = data.lineNumber + 1
+        
+        data.needsRefresh = true
+        return
+    end
+    
+    local newLineTxt = oldLineTxt:sub(data.charNumber, -1)
+    oldLineTxt = oldLineTxt:sub(1, data.charNumber - 1)
+    
+    data.textLines[data.lineNumber] = oldLineTxt
+    table.insert(data.textLines, data.lineNumber + 1, newLineTxt)
+    data.lineNumber = data.lineNumber + 1
+    data.charNumber = 1
+    
+    data.needsRefresh = true
+
+end
+
+function TextEditor:insertBackspace()
+    local data = self.data
+
+    if data.charNumber == 1 then
+        if data.lineNumber == 1 then return end
+    
+        local append = table.remove(data.textLines, data.lineNumber)
+        
+        data.charNumber = #data.textLines[data.lineNumber - 1] + 1
+        data.textLines[data.lineNumber - 1] = data.textLines[data.lineNumber - 1] .. append
+        data.lineNumber = data.lineNumber - 1
+        
+        data.needsRefresh = true
+        return
+    end
+
+    local txt = data.textLines[data.lineNumber]
+    local newTxt = txt:sub(1, data.charNumber - 2) .. txt:sub(data.charNumber, -1)
+    data.textLines[data.lineNumber] = newTxt
+    data.charNumber = data.charNumber - 1
+    data.updateLine = data.lineNumber
+end
+
+function TextEditor:doArrowNavigation(key)
+    local data = self.data
+    
+    if key == 19 then --Left
+        if data.charNumber > 1 then data.charNumber = data.charNumber - 1 end
+    end
+    
+    if key == 20 then --Right
+        if data.charNumber < #data.textLines[data.lineNumber] + 1 then data.charNumber = data.charNumber + 1 end
+    end
+    
+    if key == 17 then --Up
+        if data.lineNumber > 1 then
+            data.lineNumber = data.lineNumber - 1
+            data.charNumber = math.min(data.charNumber, #data.textLines[data.lineNumber] + 1)
+        end
+    end
+    
+    if key == 18 then --Down
+        if data.lineNumber < #data.textLines then
+            data.lineNumber = data.lineNumber + 1
+            data.charNumber = math.min(data.charNumber, #data.textLines[data.lineNumber] + 1)
+        end
+    end
+end
+
+function TextEditor:insertCharacter(key)
+    local data = self.data
+    
+    local keyString = (key == 9) and "    " or string.char(key)
+    
+    if data.charNumber == 1 then
+        data.textLines[data.lineNumber] = keyString .. data.textLines[data.lineNumber]
+        data.charNumber = 1 + #keyString
+        data.updateLine = data.lineNumber
+        return
+    end
+    
+    if data.charNumber == #data.textLines[data.lineNumber] then
+        data.textLines[data.lineNumber] = data.textLines[data.lineNumber] .. keyString
+        data.charNumber = data.charNumber + #keyString
+        data.updateLine = data.lineNumber
+        return
+    end
+    
+    local txt = data.textLines[data.lineNumber]
+    
+    local newTxt = txt:sub(1, data.charNumber - 1) .. keyString .. txt:sub(data.charNumber, -1)
+    data.textLines[data.lineNumber] = newTxt
+    data.charNumber = data.charNumber + #keyString
+    data.updateLine = data.lineNumber
+end
+
+function TextEditor:onKeyDown(key)
+    if key == 13 or key == 10 then
+        self:insertNewLine()
+    end
+    if key == 127 then
+        self:insertBackspace()
+    end
+    if key == 17 or key == 18 or key == 19 or key == 20 then
+        self:doArrowNavigation(key)
+    end
+    if key == 9 then self:insertCharacter(key) end
+    if key >= 32 and key < 127 then
+        self:insertCharacter(key)
+    end
+end
+
+local print = print
+function TextEditor:printToOutput(output)
+    if not self.programOutputWindow then
+        self.programOutputWindow = OutputWindow(4, 4, self.desktop.width - 6, 13, {})
+        self.desktop:addWindow(self.programOutputWindow)
+    end
+    
+    table.insert(self.programOutputWindow.outputs, tostring(output))
+end
+
+function TextEditor:onMouseClick(x, y)
+    if y == 0 then
+        if x <= 5 then
+            self.desktop:addWindow(Window.OpenFileWindow(self.desktop, function(data)
+                self.data.textLines = data:split("\n")
+                self.data.charNumber = 1
+                self.data.lineNumber = 1
+                self.data.scrollAmount = 0
+                self.data.needsRefresh = true
+            end,
+            function(err)
+                print("There was a problem opening the file: " .. err)
+            end))
+        elseif x <= 11 then
+            self.desktop:addWindow(Window.SaveFileWindow(self.desktop, table.concat(self.data.textLines, "\n")))
+        elseif x <= 17 then
+            local returnval = loadstring(table.concat(self.data.textLines, "\n"))
+            if type(returnval) == "string" then
+                self.desktop:addWindow(ErrorWindow(3, 3, self.desktop.width - 6, 13, { returnval }))
+            else
+                local builtins = getfenv(returnval)
+                builtins.GL = GL
+                builtins.Window = Window
+                builtins.FileSystem = FileSystem
+                builtins.Desktop = self.desktop
+                
+                builtins.print = function(output)
+                    self:printToOutput(output)
+                end
+                
+                setfenv(returnval, builtins)
+                xpcall(returnval, function(err, stacktrace)
+                    self.desktop:addWindow(ErrorWindow(3, 3, self.desktop.width - 6, 13, { err }))
+                end)
+            end
+        elseif x <= 25 then
+            if not self.programOutputWindow then
+                self.programOutputWindow = OutputWindow(4, 4, self.desktop.width - 6, 13, {})
+                self.desktop:addWindow(self.programOutputWindow)
+            end
+            self.desktop:bringToFront(self.programOutputWindow)
+        end
+    end
+end
+
+function TextEditor:update()
+end
+
+function TextEditor:render(isHardwareRefresh)
+
+    if self.data.lineNumber - self.data.scrollAmount < 1 then
+        self.data.scrollAmount = self.data.lineNumber - 1
+        self.data.needsRefresh = true
+    end
+
+    if self.data.lineNumber - self.data.scrollAmount > self.height - 3 then
+        self.data.scrollAmount = self.data.lineNumber - self.height + 3
+        self.data.needsRefresh = true
+    end
+
+    if self.desktop.activeWindow and self.desktop.activeWindow == self then
+        GL.setCursorPos(self.x + 4 + self.data.charNumber, self.y + 1 + self.data.lineNumber - self.data.scrollAmount)
+    end
+    
+    if self.data.updateLine > 0 and not self.data.needsRefresh then
+        local lineTotal = self.data.updateLine - self.data.scrollAmount
+        GL.drawRect(3, lineTotal, self.width - 2, 1, 999000)
+        GL.drawText(4, lineTotal, self.data.textLines[self.data.updateLine], 111)
+        self.data.updateLine = 0
+    end
+
+    if not isHardwareRefresh and not self.data.needsRefresh then return end
+    
+    GL.drawRect(0, 0, self.width - 2, 1, 888111)
+    GL.drawText(0, 0, "[Open][Save][Exec][Output]", 888111)
+    
+    GL.drawRect(0, 1, self.width - 2, self.height - 3, 999000)
+    for i = 1, self.height - 3 do
+        if not self.data.textLines[i + self.data.scrollAmount] then continue end
+        
+        local numString = string.format("%03d", i + self.data.scrollAmount)
+        
+        GL.drawText(0, i, numString, 777111)
+        GL.drawText(#numString + 1, i, self.data.textLines[i + self.data.scrollAmount], 111)
+        
+    end
+    
+    self.data.needsRefresh = false
+end
+
+return {
+    name = "Text Editor",
+    category = "Builtins",
+    program = TextEditor
+}

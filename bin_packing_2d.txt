@@ -1,0 +1,216 @@
+--@name Bin Packing 2D
+--@author Mavain
+--@client
+
+local GRID_WIDTH = 32
+local GRID_HEIGHT = 32
+
+local CELL_WIDTH = 1024 / GRID_WIDTH
+local CELL_HEIGHT = 1024 / GRID_HEIGHT
+
+local CURSOR_X = nil
+local CURSOR_Y = nil
+
+local actionBuffer = {}
+
+hook.add("inputPressed", "useAction", function(key)
+    if key == KEY.E then
+        
+        if CURSOR_X == nil or CURSOR_Y == nil then return end    
+
+        if CURSOR_X < 256 and CURSOR_Y > 512 - 32 then
+        
+            table.insert(actionBuffer, { type = "regenerateBoxes" })
+        
+        else
+
+            table.insert(actionBuffer, {
+                type = "changeCell",
+                x = math.floor(CURSOR_X * 2 / GRID_WIDTH),
+                y = math.floor(CURSOR_Y * 2 / GRID_HEIGHT)
+            })
+        
+        end
+        
+    end
+end)
+
+local cells = {}
+local boxes = {}
+local generatingBoxes = false
+local generatingBoxesMessage = "Ready!"
+
+local currentBoxPos = Vector(0, 0)
+local currentBoxSize = Vector(1, 1)
+
+local function areCellsFilled(currentCells, x, y, w, h)
+    for ix = x, x + w - 1 do
+        if ix >= GRID_WIDTH then return false end
+        
+        for iy = y, y + h - 1 do
+            if iy >= GRID_HEIGHT then return false end
+            
+            if not currentCells[ix + iy * GRID_WIDTH] then return false end
+            coroutine.yield()
+        end
+    end
+    return true
+end
+
+local function clearCells(currentCells, x, y, w, h)
+    for ix = x, x + w - 1 do
+        for iy = y, y + h - 1 do
+            currentCells[ix + iy * GRID_WIDTH] = nil
+            coroutine.yield()
+        end
+    end
+end
+
+local function findBestBox(currentCells)
+    
+    local bestBox = {
+        x = 0,
+        y = 0,
+        w = 0,
+        h = 0,
+        color = Color(math.random() * 360, 1, 1):hsvToRGB()
+    }
+    
+    for y = 0, GRID_HEIGHT - 1 do
+        for x = 0, GRID_WIDTH - 1 do
+        
+            coroutine.yield()
+            currentBoxPos = Vector(x, y)
+            currentBoxSize = Vector(1, 1)
+            if not currentCells[x + y * GRID_WIDTH] then continue end
+            
+        
+            for h = 1, GRID_HEIGHT - y do
+                for w = 1, GRID_WIDTH - x do
+                
+                    if not currentCells[(x + w - 1) + (y + h - 1) * GRID_WIDTH] then continue end
+                    
+                    if w * h <= bestBox.w * bestBox.h then continue end
+                    
+                    if areCellsFilled(currentCells, x, y, w, h) then
+                        bestBox.x = x
+                        bestBox.y = y
+                        bestBox.w = w
+                        bestBox.h = h
+                    end
+                    
+                    
+                    coroutine.yield()
+                    
+                end
+            end
+            
+        end
+    end
+    
+    clearCells(currentCells, bestBox.x, bestBox.y, bestBox.w, bestBox.h)
+    
+    return bestBox
+end
+
+local generateBoxes = coroutine.wrap(function()
+
+    while true do        
+        
+        boxes = {}
+        
+        generatingBoxesMessage = "Getting total cell count..."
+        
+        local currentCellCount = 0
+        local totalCellCount = 0
+        local currentCells = {}
+        for i, v in pairs(cells) do
+            currentCellCount = currentCellCount + 1
+            currentCells[i] = v
+            coroutine.yield()
+        end
+        totalCellCount = currentCellCount
+        
+        while currentCellCount > 0 do
+            local box = findBestBox(currentCells)
+            table.insert(boxes, box)
+            currentCellCount = currentCellCount - box.w * box.h
+            generatingBoxesMessage = string.format("%d%% complete", math.ceil((totalCellCount - currentCellCount) / totalCellCount * 100))
+        end
+    
+        generatingBoxesMessage = "Ready!"
+        coroutine.yield(true)
+    
+    end
+
+end)
+
+render.createRenderTarget("cellbuffer")
+render.createRenderTarget("boxbuffer")
+hook.add("render", "renderBoxes", function()
+
+    CURSOR_X, CURSOR_Y = render.cursorPos()
+
+    render.selectRenderTarget("cellbuffer")
+    render.setColor(Color(255, 255, 255))
+    
+    while #actionBuffer > 0 do
+        
+        local action = table.remove(actionBuffer)
+        
+        if action.type == "changeCell" and not generatingBoxes then
+            local location = action.x + action.y * GRID_WIDTH
+            if cells[location] then
+                render.setColor(Color(0, 0, 0))
+                render.drawRect(action.x * CELL_WIDTH, action.y * CELL_HEIGHT, CELL_WIDTH, CELL_HEIGHT)
+                cells[location] = nil
+            else
+                render.setColor(Color(255, 255, 255))
+                render.drawRect(action.x * CELL_WIDTH, action.y * CELL_HEIGHT, CELL_WIDTH, CELL_HEIGHT)
+                cells[location] = true
+            end
+        end
+        
+        if action.type == "regenerateBoxes" and not generatingBoxes then
+            generatingBoxes = true
+            hook.add("think", "generateBoxes", function()
+                while math.max(quotaAverage(), quotaUsed()) < quotaMax() * 0.8 do
+                    if generateBoxes() then
+                        hook.remove("think", "generateBoxes")
+                        generatingBoxes = false
+                        break
+                    end
+                end
+            end)
+        end
+        
+    end
+    
+    render.selectRenderTarget("boxbuffer")
+    render.clear()
+    
+    
+    render.selectRenderTarget(nil)
+    render.setColor(Color(255, 255, 255))
+    render.setRenderTargetTexture("cellbuffer")
+    render.drawTexturedRect(0, 0, 512, 512)
+    render.setColor(Color(255, 255, 255, 50))
+    render.setRenderTargetTexture("boxbuffer")
+    render.drawTexturedRect(0, 0, 512, 512)
+    render.setRenderTargetTexture(nil)
+    
+    for i, box in ipairs(boxes) do
+        render.setColor(box.color)
+        render.drawRectOutline(box.x / 2 * CELL_WIDTH, box.y / 2 * CELL_HEIGHT, box.w / 2 * CELL_WIDTH, box.h / 2 * CELL_HEIGHT)
+        render.setColor(Color(box.color.r, box.color.g, box.color.b, 150))
+        render.drawRect(box.x / 2 * CELL_WIDTH, box.y / 2 * CELL_HEIGHT, box.w / 2 * CELL_WIDTH, box.h / 2 * CELL_HEIGHT)
+    end
+    render.setColor(Color(0, 100, 255))
+    render.drawRectOutline(currentBoxPos.x / 2 * CELL_WIDTH, currentBoxPos.y / 2 * CELL_HEIGHT, currentBoxSize.x / 2 * CELL_WIDTH, currentBoxSize.y / 2 * CELL_HEIGHT)
+    
+    render.setColor(Color(255, 255, 255))
+    render.setFont("BudgetLabel")
+    render.drawText(3, 3, generatingBoxesMessage)
+    render.drawText(3, 512 - 16, "Click here to generate boxes")
+
+end)

@@ -1,0 +1,107 @@
+--@name Console Screen Graphics Library
+--@author Mavain
+
+--[[
+    GPU Drawing Functions:
+        1 = clear
+        2 = text
+        3 = rectangle
+        
+    GPU Status Registers:
+        0 == Ready (1 is true, otherwise false)
+        
+    GPU Functions:
+        0 = Draw from VRAM
+]]--
+
+local GL = {}
+do
+    local wirePorts = wire.ports
+    local instructionStream = {}
+    
+    function GL.clear()
+        table.add(instructionStream, { 1 })
+    end
+    
+    function GL.setCursorPos(x, y)
+        table.add(instructionStream, { 2, x, y })
+    end
+    
+    function GL.clearStencil(x, y, w, h, n)
+        table.add(instructionStream, { 3, x, y, w, h, n })
+    end
+    
+    function GL.setStencilWrite(n)
+        table.add(instructionStream, { 4, n })
+    end
+    
+    function GL.setGlobalOffset(x, y)
+        table.add(instructionStream, { 5, x, y })
+    end
+    
+    function GL.drawText(x, y, str, color)
+        table.add(instructionStream, { 100, x, y, color, #str, str:byte(1, -1) })
+    end
+    
+    function GL.drawUnicodeChar(x, y, char, color)
+        table.add(instructionStream, { 100, x, y, color, 1, char })
+    end
+    
+    function GL.drawRect(x, y, w, h, color)
+        table.add(instructionStream, { 101, x, y, w, h, color })
+    end
+    
+    function GL.drawRectOutline(x, y, w, h, color)
+        table.add(instructionStream, { 102, x, y, w, h, color })
+    end
+    
+    function GL.drawImageRaw(x, y, w, h, img)
+        table.add(instructionStream, { 200, x, y, w, h, unpack(img) })
+    end
+    
+    function GL.drawImageRawCharacters(x, y, w, h, img)
+        table.add(instructionStream, { 201, x, y, w, h, unpack(img) })
+    end
+    
+    function GL.swapBuffers()
+        table.add(instructionStream, { 10000 })
+    end
+
+    --[[
+    function GL.clear()
+        instructionStream[#instructionStream + 1] = 1
+    end
+    
+    function GL.drawText(x, y, str, color)
+        local len = #instructionStream
+        instructionStream[len + 1] = 2
+        instructionStream[len + 2] = x
+        instructionStream[len + 3] = y
+        instructionStream[len + 4] = color
+        instructionStream[len + 5] = #str
+        for i, v in ipairs({ str:byte(1, -1) }) do
+            instructionStream[len + 5 + i] = v
+        end
+    end
+    ]]--
+    
+    function GL.isGPUReady()
+        return wirePorts.VRAM[0] == 1
+    end
+    
+    function GL.sendToGPU()
+        if not GL.isGPUReady() then return end
+        local VRAM = wirePorts.VRAM
+        instructionStream[#instructionStream + 1] = 0
+        hook.runRemote(VRAM:entity(), {VRAM = instructionStream})
+        --[[
+        instructionStream[#instructionStream + 1] = 0
+        for i, v in ipairs(instructionStream) do
+            VRAM[i] = v
+        end
+        ]]--
+        instructionStream = {}
+        //VRAM[0] = 1
+    end
+end
+return GL

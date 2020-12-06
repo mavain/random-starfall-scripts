@@ -1,0 +1,110 @@
+--@name Window System
+--@author Mavain
+--@client
+--@include mav_windowlib/windowlib.txt
+
+local Windowing = require("mav_windowlib/windowlib.txt")
+
+local desktop = Windowing.Desktop()
+desktop.maxFPS = 60
+desktop.windowColor = Color(255, 100, 0)
+
+local CustomWindow = {}
+do
+    CustomWindow.__index = CustomWindow
+    setmetatable(CustomWindow, {
+        __call = function(self, text, x, y, width, height)
+            local window = Windowing.Window(text, x, y, width, height)
+            window.flags.backgroundColor = Color(0, 0, 0)
+            window.customData = {
+                backbuffer = string.sub(tostring(window), 8)
+            }
+            render.createRenderTarget(window.customData.backbuffer)
+            setmetatable(window, CustomWindow)
+            return window
+        end,
+        __index = function(self, key)
+            return rawget(self, key) or Windowing.Window[key]
+        end
+    })
+    
+    function CustomWindow:render()
+        self.GL.selectRenderTarget(self.customData.backbuffer)
+        
+        render.setColor(Color(math.random() * 255, math.random() * 255, math.random() * 255))
+        render.drawRect(math.random() * (self.clientWidth + 100) - 50, math.random() * (self.clientHeight + 100) - 50, math.random() * 100 + 20, math.random() * 100 + 20)
+        
+        self.GL.selectRenderTarget(nil)
+        render.setColor(Color(255, 255, 255))
+        render.setRenderTargetTexture(self.customData.backbuffer)
+        render.drawTexturedRect(0, 0, 1024, 1024)
+    end
+end
+
+local windows = {}
+do --Window 1
+    local window = Windowing.Window("hello, world!", 55, 25, 600, 400)
+    window.flags.backgroundColor = Color(0, 0, 0)
+    function window:render()
+        render.setColor(Color(0, 255, 100))
+        render.drawRectFast(math.random() * self.width, math.random() * self.height, math.random() * 100, math.random() * 100)
+        render.setColor(Color(math.random() * 255, math.random() * 255, math.random() * 255))
+        render.drawSimpleText(0, 0, "HERRO!!!!!!")
+    end
+    table.insert(windows, window)
+end
+
+do --Window 2
+    table.insert(windows, CustomWindow("fuck jannies", 105, 200, 400, 200))
+end
+
+do
+    local window = Windowing.Window("Component Test", 200, 300, 400, 200)
+    window.components = {}
+    table.insert(window.components, Windowing.Components.Button("Click here to create a new window", 5, 5, 220, 30, function(button, x, y)
+        local newWindow = CustomWindow("", 50, 50, 200, 200)
+        newWindow.title = "New Window - " .. string.sub(tostring(newWindow), 10)
+        table.insert(windows, newWindow)
+    end))
+    table.insert(window.components, Windowing.Components.Slider("Slide to change color of desktop", 5, 40, 220, 30, function(slider, value)
+        desktop.windowColor = Color(value * 360, 1, 1):hsvToRGB()
+    end))
+    table.insert(window.components, Windowing.Components.CheckBox("Click to... do nothing??", 5, 75, 30, 30, function(checkbox, value)
+        
+    end))
+    table.insert(windows, window)
+end
+
+desktop.windows = windows
+
+hook.add("inputPressed", "input_pressed", function(key)
+    if key ~= KEY.E then return end
+    desktop:windowInteractKeyPressed()
+end)
+
+hook.add("inputReleased", "input_released", function(key)
+    if key ~= KEY.E then return end
+    desktop:windowInteractKeyReleased()
+end)
+
+hook.add("think", "update_windows", function()
+    desktop:update()
+end)
+
+render.createRenderTarget("desktop_buffer")
+hook.add("renderoffscreen", "draw_windows", function()
+    desktop:render("desktop_buffer")
+end)
+hook.add("render", "draw_windows", function()
+    render.setRenderTargetTexture("desktop_buffer")
+    --render.setFilterMin(1)
+    render.drawTexturedRect(0, 0, 512, 512)
+    render.setRenderTargetTexture(nil)
+    local currentCursorX, currentCursorY = render.cursorPos(player())
+    if currentCursorX ~= nil and currentCursorY ~= nil then
+        desktop:updateCursor(currentCursorX * 2, currentCursorY * 2)
+        render.setColor(Color(255, 0, 255))
+        render.drawRect(currentCursorX - 1, currentCursorY - 1, 2, 2)
+    end
+    
+end)

@@ -1,0 +1,576 @@
+--@name House Generator
+--@author
+--@server
+
+--if owner() != player() then return end
+
+local maxWidth = 8
+local maxHeight = 8
+
+local maxRoomWidth = 6
+local maxRoomHeight = 6
+local minRoomWidth = 2
+local minRoomHeight = 2
+
+local roomIDCounter = 0
+local rooms = {}
+local doors = {}
+local walls = {}
+local floors = {}
+
+local unfilledTiles = maxWidth * maxHeight
+local tileMap = {}
+for i = 1, maxHeight do
+    tileMap[i] = {}
+    for j = 1, maxWidth do
+        tileMap[i][j] = false
+    end
+end
+
+function getNextEmptyTile()
+
+    for i = 0, maxHeight - 1 do
+        for j = 0, maxWidth - 1 do
+
+            if tileMap[i + 1][j + 1] then continue end
+            
+            local test = true
+            
+            for y = i, i + minRoomHeight - 1 do
+                for x = j, j + minRoomWidth - 1 do
+                    if x >= maxWidth or y >= maxHeight then
+                        test = false
+                        continue
+                    end
+                    if tileMap[y + 1][x + 1] then test = false end
+                end
+            end
+            
+            if test then return j, i end
+            
+        end
+    end
+
+end
+
+function zeroTiles()
+    unfilledTiles = maxWidth * maxHeight
+    tileMap = {}
+    for i = 1, maxHeight do
+        tileMap[i] = {}
+        for j = 1, maxWidth do
+            tileMap[i][j] = false
+        end
+    end
+end
+
+function setTile(x, y, col)
+    tileMap[y + 1][x + 1] = col
+    table.insert(floors, {x=x, y=y})
+    unfilledTiles = unfilledTiles - 1
+end
+
+function createRoom(x, y, x2, y2)
+    roomIDCounter = roomIDCounter + 1
+    return {x=x,
+            y=y,
+            x2=x2,
+            y2=y2,
+            id=roomIDCounter - 1,
+            connectedRooms = {}
+        }
+end
+
+function tryCreateRoom(x, y, width, height)
+    
+    if x >= maxWidth then return false end
+    if y >= maxHeight then return false end
+    
+    local x2 = math.clamp(x + width - 1, 0, maxWidth - 1)
+    local y2 = math.clamp(y + height - 1, 0, maxHeight - 1)
+    
+    //print(x, y, x2, y2)
+    
+    for i, room in ipairs(rooms) do
+    
+        //if ((X <= X2+W2 && X+W >= X2) && (Y <= Y2+H2 && Y+H >= Y2)) { return 0 }
+    
+        if x <= room.x2 and x2 >= room.x and y <= room.y2 and y2 >= room.y then return false end
+    
+    end
+    
+    table.insert(rooms, 0, createRoom(x, y, x2, y2))
+    
+    local col = Color(math.random(0, 255), math.random(0, 255), math.random(0, 255))
+    
+    for j = x, x2 do
+        for k = y, y2 do
+            setTile(j, k, col)
+        end
+    end
+    
+    return true
+    
+end
+
+function findRoomByID(id)
+    
+    for i, room in ipairs(rooms) do
+        if room.id == id then return room end
+    end
+    
+    return nil
+    
+end
+
+function calculateDoors()
+    
+    local room0 = rooms[#rooms]
+    
+    if math.random(1, 2) == 1 then
+        table.insert(doors, {x = 0, y = math.random(0, room0.y2), dir=2, type="front"})
+    else
+        table.insert(doors, {x = math.random(0, room0.x2), y = 0, dir=3, type="front"})    
+    end
+    
+
+    for i, room1 in ipairs(rooms) do
+        for j, room2 in ipairs(rooms) do
+            
+            if room1.id == room2.id then continue end
+            
+            if room1.x2 == room2.x - 1 then
+                if not (room2.y > room1.y2) and not (room2.y2 < room1.y) then
+                    table.insert(room1.connectedRooms, room2)
+                    
+                    local maxY = math.max(room1.y, room2.y)
+                    local minY2 = math.min(room1.y2, room2.y2)
+                    
+                    table.insert(doors, {x = room1.x2, y = math.random(maxY, minY2), dir = 0, type = "normal"})
+                    
+                end
+            end
+            
+            if room1.y2 == room2.y - 1 then
+                if not (room2.x > room1.x2) and not (room2.x2 < room1.x) then
+                    table.insert(room1.connectedRooms, room2)
+                
+                    local maxX = math.max(room1.x, room2.x)
+                    local minX2 = math.min(room1.x2, room2.x2)
+                    
+                    table.insert(doors, {x = math.random(maxX, minX2), y = room1.y2, dir = 1, type = "normal"})
+                
+                end
+            end
+            
+        end
+    end
+
+end
+
+function calculateWalls()
+
+    for i, room in ipairs(rooms) do
+    
+        for y = room.y, room.y2 do
+            table.insert(walls, {x=room.x2, y=y, dir=0})
+            
+            
+            if room.x == 0 then
+                table.insert(walls, {x=room.x, y=y, dir=2})
+            else
+                if not tileMap[y + 1][room.x] then
+                    table.insert(walls, {x=room.x, y=y, dir=2})
+                end
+            end
+            
+        end
+        
+        for x = room.x, room.x2 do
+            table.insert(walls, {x=x, y=room.y2, dir=1})
+            
+            if room.y == 0 then
+                table.insert(walls, {x=x, y=room.y, dir=3})
+            else
+                if not tileMap[room.y][x + 1] then
+                    table.insert(walls, {x=x, y=room.y, dir=3})
+                end
+            end
+        end
+    
+    end
+    
+    for i, door in ipairs(doors) do
+        for j, wall in ipairs(walls) do
+            if door.x == wall.x and door.y == wall.y and door.dir == wall.dir then
+                table.remove(walls, j)
+            end
+        end
+    end
+
+end
+
+prop.setPropUndo(false)
+
+local propList = {}
+
+function buildHouse()
+
+    if #propList > 0 then
+    
+        if prop.canSpawn() then
+        
+            local p = table.remove(propList, 1)
+            
+            local j = prop.create(chip():getPos() + p.pos, p.ang, p.model, true)
+            
+            if p.material then
+                j:setMaterial(p.material)
+            end
+            
+            if p.color then
+                j:setColor(p.color)
+            end
+            
+            if p.noCollideAll then
+                j:setNocollideAll(p.noCollideAll)
+            end
+            
+            if p.bodyGroupID then
+                j:setBodygroup(p.bodyGroupID, p.bodyGroupValue)
+            end
+            
+        end
+    else
+    
+        hook.remove("think", "buildhouse")
+        
+    end
+
+end
+
+local wallMaterial = "models/props_debris/plasterwall034a"
+
+local doorPrefabs = {
+    ["normal"] = {
+        {
+            pos = Vector(0, 0, 54),
+            ang = Angle(0, 90, 90),
+            model = "models/sprops/rectangles/size_4/rect_36x48x3.mdl",
+            material = wallMaterial
+        },
+        {
+            pos = Vector(48, 0, 0),
+            ang = Angle(90, 0, 0),
+            model = "models/sprops/rectangles/size_5/rect_48x144x3.mdl",
+            material = wallMaterial
+        },
+        {
+            pos = Vector(-48, 0, 0),
+            ang = Angle(90, 0, 0),
+            model = "models/sprops/rectangles/size_5/rect_48x144x3.mdl",
+            material = wallMaterial
+        },
+        {
+            pos = Vector(23, 0, -17),
+            ang = Angle(0, 0, 0),
+            model = "models/props_c17/door01_left.mdl",
+            noCollideAll = true,
+            bodyGroupID = 1,
+            bodyGroupValue = 1
+        }
+    },
+    ["front"] = {
+        {
+            pos = Vector(-51, 0, 0),
+            ang = Angle(90, 0, 0),
+            model = "models/sprops/rectangles/size_4_5/rect_42x144x3.mdl",
+            material = wallMaterial
+        },
+        {
+            pos = Vector(51, 0, 0),
+            ang = Angle(90, 0, 0),
+            model = "models/sprops/rectangles/size_4_5/rect_42x144x3.mdl",
+            material = wallMaterial
+        },
+        {
+            pos = Vector(0, 0, 57),
+            ang = Angle(0, 90, 90),
+            model = "models/sprops/rectangles/size_3_5/rect_30x60x3.mdl",
+            material = wallMaterial
+        },
+        {
+            pos = Vector(23, 0, -17),
+            ang = Angle(0, 0, 0),
+            model = "models/props_c17/door03_left.mdl",
+            noCollideAll = true,
+            bodyGroupID = 1,
+            bodyGroupValue = 1
+        },
+        {
+            pos = Vector(27, 0, -18),
+            ang = Angle(90, 0, 0),
+            model = "models/sprops/cuboids/height06/size_1/cube_6x108x6.mdl",
+            material = "models/props_c17/metalladder001"
+        },
+        {
+            pos = Vector(-27, 0, -18),
+            ang = Angle(90, 0, 0),
+            model = "models/sprops/cuboids/height06/size_1/cube_6x108x6.mdl",
+            material = "models/props_c17/metalladder001"
+        },
+        {
+            pos = Vector(0, 0, 39),
+            ang = Angle(0, 90, 0),
+            model = "models/sprops/cuboids/height06/size_1/cube_6x60x6.mdl",
+            material = "models/props_c17/metalladder001"
+        }
+    }
+}
+
+function generateFloor()
+    local model = "models/sprops/rectangles/size_7/rect_144x144x3.mdl"
+    local modelSize = 144
+    
+    local floorMaterial = "models/props_debris/concretefloor013a"
+    local roofMaterial = "models/map12_building2/woodwall043a"
+    if #floors > 0 then
+        
+        local floor = table.remove(floors, 1)
+        
+        table.insert(propList, {
+            pos = Vector(modelSize / 2 + modelSize * floor.x, modelSize / 2 + modelSize * floor.y, 0),
+            ang = Angle(0, 0, 0),
+            model = model,
+            material = floorMaterial
+        })
+        
+        table.insert(propList, {
+            pos = Vector(modelSize / 2 + modelSize * floor.x, modelSize / 2 + modelSize * floor.y, modelSize),
+            ang = Angle(0, 0, 0),
+            model = model,
+            material = roofMaterial
+        })
+            
+    
+    end
+end
+
+function generateWalls()
+    local model = "models/sprops/rectangles/size_7/rect_144x144x3.mdl"
+    local modelSize = 144
+    
+    if #walls > 0 then
+        
+        local wall = table.remove(walls, 1)
+        
+        local pos = (Vector(wall.x + 0.5, wall.y + 0.5, 0.5) + Vector(math.cos(wall.dir / 2 * math.pi), math.sin(wall.dir / 2 * math.pi), 0) * 0.5) * modelSize
+        
+        local ang = Angle(0, 0, 0)
+        if wall.dir == 1 or wall.dir == 3 then
+            ang = Angle(90, 0, 90)
+        else
+            ang = Angle(90, 0, 0)
+        end
+        
+        table.insert(propList, {
+            pos = pos,
+            ang = ang,
+            model = model,
+            material = wallMaterial
+        })
+        
+    
+    end
+end
+
+function generateDoors()
+--[[
+models/sprops/rectangles/size_5/rect_48x144x3.mdl
+lyrical: the alcoholic@self: print(this:GetModel())
+models/props_c17/door01_left.mdl
+lyrical: the alcoholic@self: print(this:GetModel())
+[Ping] Matchy timing out
+models/sprops/rectangles/size_4/rect_36x48x3.mdl
+lyrical: the alcoholic@self: print(this:GetModel())
+]]--
+    modelSize = 144
+    
+    if #doors > 0 then
+    
+        local door = table.remove(doors, 1)
+        
+        local pos = (Vector(door.x + 0.5, door.y + 0.5, 0.5) + Vector(math.cos(door.dir / 2 * math.pi), math.sin(door.dir / 2 * math.pi), 0) * 0.5) * modelSize
+        
+        local sideOffset = Vector(48, 0, 0)
+        local doorOffset = Vector(23, 0, 0)
+        
+        local ang = Angle(0, 0, 0)
+        if door.dir == 0 or door.dir == 2 then
+            ang = Angle(0, 90, 0)
+        end
+        
+        for i, p in ipairs(doorPrefabs[door.type]) do
+            table.insert(propList, {
+                pos = pos + p.pos:rotateAroundAxis(Vector(0, 0, 1), ang.yaw),
+                ang = ang + p.ang + Angle(0, 90, 0),
+                model = p.model,
+                material = p.material,
+                noCollideAll = p.noCollideAll,
+                bodyGroupID = p.bodyGroupID,
+                bodyGroupValue = p.bodyGroupValue
+            })
+        end
+        
+        --[[
+        table.insert(propList, {
+            pos = pos + Vector(0, 0, 54),
+            ang = ang + Angle(0, 90, 90),
+            model = "models/sprops/rectangles/size_4/rect_36x48x3.mdl",
+            material = wallMaterial
+        })
+        
+        table.insert(propList, {
+            pos = pos + sideOffset,
+            ang = ang + Angle(90, 0, 0),
+            model = "models/sprops/rectangles/size_5/rect_48x144x3.mdl",
+            material = wallMaterial
+        })
+        
+        table.insert(propList, {
+            pos = pos - sideOffset,
+            ang = ang + Angle(90, 0, 0),
+            model = "models/sprops/rectangles/size_5/rect_48x144x3.mdl",
+            material = wallMaterial
+        })
+        
+        table.insert(propList, {
+            pos = pos - Vector(0, 0, 17) + doorOffset,
+            ang = ang,
+            model = "models/props_c17/door03_left.mdl", --"models/props_c17/door01_left.mdl",
+            noCollideAll = true,
+            bodyGroupID = 1,
+            bodyGroupValue = 1
+        })
+        ]]--
+    end
+    
+end
+
+function generateBuilding()
+
+    local model = "models/sprops/rectangles/size_7/rect_144x144x3.mdl"
+    local modelSize = 144
+    
+    local floorMaterial = "models/props_debris/concretefloor013a"
+    
+    generateFloor()
+    generateWalls()
+    generateDoors()
+    
+    if #floors == 0 and #walls == 0 and #doors == 0 then
+        hook.remove("think", "generatebuilding")
+        hook.add("think", "buildhouse", buildHouse)
+    end
+
+end
+
+local maxStuckCount = 20
+local stuckCount = 0
+local lastUnfilledTiles = unfilledTiles
+
+hook.add("think", "generatelayout", function()
+
+    if unfilledTiles > 0 then
+    
+        local x, y = getNextEmptyTile()
+        
+        if not getNextEmptyTile() then 
+            unfilledTiles = 0 
+            return
+        end
+        
+        tryCreateRoom(x, y, math.random(minRoomWidth, maxRoomWidth), math.random(minRoomHeight, maxRoomHeight))
+
+        if unfilledTiles == lastUnfilledTiles then
+            stuckCount = stuckCount + 1
+            if stuckCount == maxStuckCount then
+                print("Room can't be generated, regenerating...")
+                zeroTiles()
+                rooms = {}
+                stuckCount = 0
+            end
+        else
+            lastUnfilledTiles = unfilledTiles
+            stuckCount = 0
+        end
+    
+    else
+    
+        print(#rooms .. " rooms generated!")
+        hook.remove("think", "generatelayout")
+        
+        calculateDoors()
+        calculateWalls()
+        
+        hook.add("think", "generatebuilding", generateBuilding)
+        
+    end
+
+end)
+
+--[[
+
+local renderWidth = 512 / maxWidth
+local renderHeight = 512 / maxHeight
+hook.add("render", "drawmap", function()
+    
+    for i, room in ipairs(rooms) do
+        
+        local width = room.x2 - room.x + 1
+        local height = room.y2 - room.y + 1
+        render.setColor(tileMap[room.y + 1][room.x + 1])
+        render.drawRect(room.x * renderWidth, room.y * renderHeight, width * renderWidth, height * renderHeight)
+        render.setColor(Color(255, 255, 255))
+        render.drawRectOutline(room.x * renderWidth, room.y * renderHeight, width * renderWidth, height * renderHeight)
+        render.drawText((room.x + room.x2 - 1) / 2 * renderWidth, (room.y + room.y2 - 1) / 2 * renderHeight, "Room #" .. tostring(room.id), TEXT_ALIGN_CENTER)
+        
+        local x = (room.x + room.x2) / 2
+        local y = (room.y + room.y2) / 2
+        
+        for j, cr in ipairs(room.connectedRooms) do
+            
+            local crx = (cr.x + cr.x2) / 2
+            local cry = (cr.y + cr.y2) / 2
+            
+            render.drawLine(x * renderWidth, y * renderHeight, crx * renderWidth, cry * renderHeight)
+            
+        end
+    
+    end
+    
+    render.setColor(Color(0, 0, 0))
+    for i, door in ipairs(doors) do
+        local x = (door.x + 0.5) * renderWidth
+        local y = (door.y + 0.5) * renderHeight
+        local x2 = math.cos(door.dir / 2 * math.pi) * 0.5 * renderWidth + x
+        local y2 = math.sin(door.dir / 2 * math.pi) * 0.5 * renderHeight + y
+        render.drawRect(x2 - 5, y2 - 5, 10, 10)
+        --render.drawRectFast((door.x + 0.5) * renderWidth - 10, (door.y + 0.5) * renderHeight - 10, 10, 10)
+    
+    end
+    
+    render.setColor(Color(128, 128, 128))
+    for i, wall in ipairs(walls) do
+        local x = (wall.x + 0.5) * renderWidth
+        local y = (wall.y + 0.5) * renderHeight
+        local x2 = math.cos(wall.dir / 2 * math.pi) * 0.5 * renderWidth + x
+        local y2 = math.sin(wall.dir / 2 * math.pi) * 0.5 * renderHeight + y
+        render.drawRect(x2 - 5, y2 - 5, 10, 10)
+        --render.drawRectFast((door.x + 0.5) * renderWidth - 10, (door.y + 0.5) * renderHeight - 10, 10, 10)
+    
+    end
+
+end)
+
+]]--

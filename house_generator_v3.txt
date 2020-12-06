@@ -1,0 +1,949 @@
+--@name House Generator V3
+--@author
+--@shared
+
+--[[
+
+    FUCKING TODO OXY MAV
+    
+    Add code to support T-junctions in hallways
+    Add outside walls + windows
+    Add door from outside in
+
+]]--
+
+local House = {}
+do
+    House.__index = House
+    setmetatable(House, {
+        __call = function(self, width, height, settings)
+            local house = { width = width,
+                            height = height, 
+                            settings = settings, 
+                            rooms = {},
+                            halls = {},
+                            attachmentPoints = {},
+                            doneGenerating = false }
+            
+            setmetatable(house, House)
+            
+            return house
+        end
+    })
+    
+    function House:isValidLocation(x, y)
+        if x < 0 then return false end
+        if x >= self.width then return false end
+        if y < 0 then return false end
+        if y >= self.height then return false end
+        for roomID, room in ipairs(self.rooms) do
+            if x >= room.x and x <= room.x + room.width - 1 and y >= room.y and y <= room.y + room.height - 1 then return false end
+        end
+        return true
+    end
+    
+    function House:getSharedWallPoints(room, other)
+        if room.distanceToHall == 0 and other.distanceToHall == 0 then return {} end
+        local points = {}
+        local yield = coroutine.yield
+        if room.x == other.x + other.width then
+            for y = math.max(room.y, other.y), math.min(room.y + room.height - 1, other.y + other.height - 1) do
+                table.insert(points, { x = room.x, y = y, direction = "left" })
+            end
+        end
+        if other.x == room.x + room.width then
+            for y = math.max(room.y, other.y), math.min(room.y + room.height - 1, other.y + other.height - 1) do
+                table.insert(points, { x = other.x - 1, y = y, direction = "right" })
+            end
+        end
+        if room.y == other.y + other.height then
+            for x = math.max(room.x, other.x), math.min(room.x + room.width - 1, other.x + other.width - 1) do
+                table.insert(points, { x = x, y = room.y, direction = "up" })
+            end
+        end
+        if other.y == room.y + room.height then
+            for x = math.max(room.x, other.x), math.min(room.x + room.width - 1, other.x + other.width - 1) do
+                table.insert(points, { x = x, y = other.y - 1, direction = "down" })
+            end
+        end
+        return points
+    end
+    
+    function House:getInteriorWallPoints(room)
+        local points = {}
+        local junctionPoints = {}
+        
+        for x = room.x, room.x + room.width - 1 do
+            table.insert(points, { x = x, y = room.y, direction = "up" })
+            table.insert(points, { x = x, y = room.y + room.height - 1, direction = "down" })
+            coroutine.yield()
+        end
+        
+        for y = room.y, room.y + room.height - 1 do
+            table.insert(points, { x = room.x, y = y, direction = "left" })
+            table.insert(points, { x = room.x + room.width - 1, y = y, direction = "right" })
+            coroutine.yield()
+        end
+        
+        local invalid = {}
+        
+        if room.distanceToHall == 0 then
+            for i, v in ipairs(points) do
+                local x = v.x + (v.direction == "left" and -1 or 0) + (v.direction == "right" and 1 or 0)
+                local y = v.y + (v.direction == "up" and -1 or 0) + (v.direction == "down" and 1 or 0)
+                local possibleRoom = self:getRoomAt(x, y)
+                if possibleRoom and possibleRoom.distanceToHall == 0 then
+                    if not table.hasValue(invalid, v) then table.insert(invalid, v) end
+                    table.insert(junctionPoints, v)
+                end
+                coroutine.yield()
+            end
+        end
+        
+        for i, v in ipairs(room.doorFrames) do
+            for k, j in ipairs(points) do
+                if v.x == j.x and v.y == j.y and v.direction == j.direction then
+                    if not table.hasValue(invalid, j) then table.insert(invalid, j) end
+                end
+                coroutine.yield()
+            end
+        end
+        
+        for i, v in ipairs(invalid) do
+            table.removeByValue(points, v)
+            coroutine.yield()
+        end
+        
+        return points, junctionPoints
+    end
+    
+    function House:recalculateAttachmentPoints()
+        self.attachmentPoints = {}
+        local yield = coroutine.yield
+        for roomID, room in ipairs(self.rooms) do
+            for x = room.x, room.x + room.width - 1 do
+                if self:isValidLocation(x, room.y - 1) then 
+                    table.insert(self.attachmentPoints, Vector(x, room.y - 1))
+                    if room.distanceToHall == 0 then
+                        for i = 1, 9 do
+                            table.insert(self.attachmentPoints, Vector(x, room.y - 1))
+                            yield()
+                        end
+                    end
+                end
+                yield()
+                if self:isValidLocation(x, room.y + room.height) then 
+                    table.insert(self.attachmentPoints, Vector(x, room.y + room.height))
+                    if room.distanceToHall == 0 then
+                        for i = 1, 9 do
+                            table.insert(self.attachmentPoints, Vector(x, room.y + room.height))
+                            yield()
+                        end
+                    end
+                end
+                yield()
+            end
+            for y = room.y, room.y + room.height - 1 do
+                if self:isValidLocation(room.x - 1, y) then 
+                    table.insert(self.attachmentPoints, Vector(room.x - 1, y))
+                    if room.distanceToHall == 0 then
+                        for i = 1, 9 do
+                            table.insert(self.attachmentPoints, Vector(room.x - 1, y))
+                            yield()
+                        end
+                    end
+                end
+                yield()
+                if self:isValidLocation(room.x + room.width, y) then 
+                    table.insert(self.attachmentPoints, Vector(room.x + room.width, y))
+                    if room.distanceToHall == 0 then
+                        for i = 1, 9 do
+                            table.insert(self.attachmentPoints, Vector(room.x + room.width, y))
+                            yield()
+                        end
+                    end
+                end
+                yield()
+            end
+        end
+    end
+    
+    function House:getRoomAt(x, y)
+        for otherRoomID, otherRoom in ipairs(self.rooms) do
+            if x >= otherRoom.x and x < otherRoom.x + otherRoom.width and y >= otherRoom.y and y < otherRoom.y + otherRoom.height then
+                return otherRoom
+            end
+            coroutine.yield()
+        end
+        return nil
+    end
+    
+    function House:isValidRoom(room, exclusions)
+        if room.x < 0 then return false end
+        if room.x + room.width > self.width then return false end
+        if room.y < 0 then return false end
+        if room.y + room.height > self.height then return false end
+        for otherRoomID, otherRoom in ipairs(self.rooms) do
+            if exclusions and table.hasValue(exclusions, otherRoom) then continue end
+            if not (room.x + room.width <= otherRoom.x or room.x >= otherRoom.x + otherRoom.width
+                    or room.y + room.height <= otherRoom.y or room.y >= otherRoom.y + otherRoom.height) then
+                return false
+            end
+            coroutine.yield()
+        end
+        return true
+    end
+    
+    function House:getNeighboringRooms(room)
+        local neighbors = {}
+        local yield = coroutine.yield
+        for x = room.x, room.x + room.width - 1 do
+            do
+                local other = self:getRoomAt(x, room.y - 1)
+                if other and other ~= room then
+                    if not table.hasValue(other) then table.insert(neighbors, other) end
+                end
+            end
+            yield()
+            do
+                local other = self:getRoomAt(x, room.y + room.height)
+                if other and other ~= room then
+                    if not table.hasValue(other) then table.insert(neighbors, other) end
+                end
+            end
+            yield()
+        end
+        for y = room.y, room.y + room.height - 1 do
+            do
+                local other = self:getRoomAt(room.x - 1, y)
+                if other and other ~= room then
+                    if not table.hasValue(other) then table.insert(neighbors, other) end
+                end
+            end
+            yield()
+            do
+                local other = self:getRoomAt(room.x + room.width, y)
+                if other and other ~= room then
+                    if not table.hasValue(other) then table.insert(neighbors, other) end
+                end
+            end
+            yield()
+        end
+        return neighbors
+    end
+    
+    function House:calculateDistanceToHall(room)
+    
+        -- This is assuming that the hallways are the first ones to be laid, which should be true
+        if room.distanceToHall == 0 then return 0, room.connectedRoom end
+        local neighbors = self:getNeighboringRooms(room)
+        
+        if #neighbors == 0 then return -1, nil end
+        
+        local minimumDistance = neighbors[1].distanceToHall
+        local connectedRooms = { neighbors[1] }
+        
+        for neighborID, neighbor in ipairs(neighbors) do
+            if neighbor.distanceToHall < minimumDistance then
+                minimumDistance = neighbor.distanceToHall
+                connectedRooms = { neighbor }
+            end
+            if neighbor.distanceToHall == minimumDistance then
+                table.insert(connectedRooms, neighbor)
+            end
+            coroutine.yield()
+        end
+        return minimumDistance + 1, table.random(connectedRooms)
+    end
+    
+    function House:findPacking(room, maxWidth, maxHeight)
+        
+        local minWidth = room.width
+        local minHeight = room.height
+        
+        local exclusions = { room }
+        
+        local box = { x = room.x, y = room.y, width = minWidth, height = minHeight }
+        local bestBox = { x = room.x, y = room.y, width = room.width, height = room.height }
+        
+        for y = room.y - maxHeight, room.y + maxHeight do
+            for x = room.x - maxWidth, room.x + maxWidth do
+                
+                box.x = x
+                box.y = y
+                
+                for w = minWidth, maxWidth do
+                    for h = minHeight, maxHeight do
+                        
+                        box.width = w
+                        box.height = h
+                        
+                        if self:isValidRoom(box, exclusions) then
+                        
+                            if w * h > bestBox.width * bestBox.height then
+                            
+                                bestBox.x = x
+                                bestBox.y = y
+                                bestBox.width = w
+                                bestBox.height = h
+                            
+                            end
+                        
+                        end
+                        
+                        coroutine.yield()
+                    end
+                end
+                
+            end
+        end
+        
+        return bestBox
+        
+    end
+end
+
+local house = House(12, 12, {
+    minimumX = 2,
+    maximumX = 2,
+    minimumY = 2,
+    maximumY = 2,
+    maxDistanceToHall = 2,
+    maxRooms = 100
+})
+
+local generateHouse = coroutine.wrap(function()
+    
+    local attemptCount = 0
+    local roomCount = 0
+    
+    print("Setting up hallways...")
+    do
+        local lastOrientation = "vertical"
+        local parent = nil
+        if math.random() < 0.5 then
+            local w = math.floor((house.width - 1) / 2 + math.random() * (house.width - 1) / 2)
+            local h = 1
+            local x = math.floor(math.random() * (house.width - w + 1))
+            local y = math.floor((house.height / 3) + math.random() * (house.height / 3))
+            local room = {
+                x = x,
+                y = y,
+                width = w,
+                height = h,
+                distanceToHall = 0,
+                color = Color(255, 100, 0),
+                orientation = "horizontal",
+                walls = {},
+                doorFrames = {},
+                junctions = {}
+            }
+            parent = room
+            table.insert(house.rooms, room)
+            table.insert(house.halls, room)
+            if x - 1 >= 0 then
+                table.insert(house.attachmentPoints, Vector(x - 1, y))
+            end
+            if x + w < house.width then
+                table.insert(house.attachmentPoints, Vector(x + w, y))
+            end
+            lastOrientation = "horizontal"
+        else
+            local w = 1
+            local h = math.floor((house.height - 1) / 2 + math.random() * (house.height - 1) / 2)
+            local x = math.floor((house.width / 3) + math.random() * (house.width / 3))
+            local y = math.floor(math.random() * (house.height - h + 1))
+            local room = {
+                x = x,
+                y = y,
+                width = w,
+                height = h,
+                distanceToHall = 0,
+                color = Color(255, 100, 0),
+                orientation = "vertical",
+                walls = {},
+                doorFrames = {},
+                junctions = {}
+            }   
+            parent = room
+            table.insert(house.rooms, room)
+            table.insert(house.halls, room)
+            if y - 1 >= 0 then
+                table.insert(house.attachmentPoints, Vector(x, y - 1))
+            end
+            if y + h < house.height then
+                table.insert(house.attachmentPoints, Vector(x, y + h))
+            end
+        end
+    
+        if math.random() < 0 then
+            if lastOrientation == "horizontal" then
+                local attachment = table.remove(house.attachmentPoints)
+                local w = 1
+                local h = math.floor((house.height - 1) / 2 + math.random() * (house.height - 1) / 2)
+                local x = attachment.x
+                local y = math.clamp(math.floor(math.random() * (house.height - h + 1)), attachment.y - h + 1, attachment.y)
+                local room = {
+                    x = x,
+                    y = y,
+                    width = w,
+                    height = h,
+                    distanceToHall = 0,
+                    connectedRoom = parent,
+                    color = Color(255, 100, 0),
+                    orientation = "vertical",
+                    walls = {},
+                    doorFrames = {},
+                    junctions = {}
+                }   
+                table.insert(house.rooms, room)
+                table.insert(house.halls, room)
+            else
+                local attachment = table.remove(house.attachmentPoints)
+                local w = math.floor((house.width - 1) / 2 + math.random() * (house.width - 1) / 2)
+                local h = 1
+                local x = math.clamp(math.floor(math.random() * (house.width - w + 1)), attachment.x - w + 1, attachment.x)
+                local y = attachment.y
+                local room = {
+                    x = x,
+                    y = y,
+                    width = w,
+                    height = h,
+                    distanceToHall = 0,
+                    connectedRoom = parent,
+                    color = Color(255, 100, 0),
+                    orientation = "horizontal",
+                    walls = {},
+                    doorFrames = {},
+                    junctions = {}
+                }   
+                table.insert(house.rooms, room)
+                table.insert(house.halls, room)
+            end
+        end
+        house:recalculateAttachmentPoints()
+    end
+    
+    print("Generating initial house...")
+    while true do
+    
+        if attemptCount > 250 then
+            break
+        end
+    
+        if roomCount >= house.settings.maxRooms then
+            break
+        end
+    
+        local attachmentPoint = table.random(house.attachmentPoints)
+        
+        if not attachmentPoint then
+            break
+        end
+        
+        local room = {
+            x = attachmentPoint.x,
+            y = attachmentPoint.y,
+            width = math.random(house.settings.minimumX, house.settings.maximumX),
+            height = math.random(house.settings.minimumY, house.settings.maximumY),
+            color = Color(255, 255, 255),
+            walls = {},
+            doorFrames = {},
+            junctions = {}
+        }
+        
+        if house:isValidRoom(room) then
+            table.insert(house.rooms, room)
+            room.distanceToHall = house:calculateDistanceToHall(room)
+            house:recalculateAttachmentPoints()
+            roomCount = roomCount + 1
+            attemptCount = 0
+            coroutine.yield()
+            continue
+        end
+        
+        room.x = attachmentPoint.x - room.width + 1
+        
+        if house:isValidRoom(room) then
+            table.insert(house.rooms, room)
+            room.distanceToHall = house:calculateDistanceToHall(room)
+            house:recalculateAttachmentPoints()
+            roomCount = roomCount + 1
+            attemptCount = 0
+            coroutine.yield()
+            continue
+        end
+        
+        room.y = attachmentPoint.y - room.height + 1
+        
+        if house:isValidRoom(room) then
+            table.insert(house.rooms, room)
+            room.distanceToHall = house:calculateDistanceToHall(room)
+            house:recalculateAttachmentPoints()
+            roomCount = roomCount + 1
+            attemptCount = 0
+            coroutine.yield()
+            continue
+        end
+        
+        room.x = attachmentPoint.x
+        
+        if house:isValidRoom(room) then
+            table.insert(house.rooms, room)
+            room.distanceToHall = house:calculateDistanceToHall(room)
+            house:recalculateAttachmentPoints()
+            roomCount = roomCount + 1
+            attemptCount = 0
+            coroutine.yield()
+            continue
+        end
+        
+        attemptCount = attemptCount + 1
+    
+    end
+    
+    -- Removing rooms too far away from a hallway
+    print("Culling rooms...")
+    for roomID, room in ipairs(house.rooms) do
+        if room.distanceToHall >= house.settings.maxDistanceToHall then
+            table.removeByValue(house.rooms, room)
+        end
+        coroutine.yield()
+    end
+    
+    -- Repack the rooms
+    print("Repacking rooms...")
+    for i = 1, 3 do
+        print("Repacking iteration " .. i)
+        for roomID, room in ipairs(house.rooms) do
+            if room.distanceToHall == 0 then continue end
+            local box = house:findPacking(room, house.settings.maximumX, house.settings.maximumY)
+            room.x = box.x
+            room.y = box.y
+            room.width = box.width
+            room.height = box.height
+            coroutine.yield()
+        end
+    end
+    for roomID, room in ipairs(house.rooms) do
+        if room.distanceToHall == 0 then continue end
+        local box = house:findPacking(room, math.min(room.width + house.settings.minimumX, house.width), math.min(room.height + house.settings.minimumY, house.height))
+        room.x = box.x
+        room.y = box.y
+        room.width = box.width
+        room.height = box.height
+        coroutine.yield()
+    end
+    
+    -- Final check for distance to nearest hall
+    print("Doing final checks for distances and culling...")
+    for i = 1, 3 do
+        for roomID, room in ipairs(house.rooms) do
+            local distance, connected = house:calculateDistanceToHall(room)
+            room.distanceToHall = distance
+            room.connectedRoom = connected
+            coroutine.yield()
+        end
+        for roomID, room in ipairs(house.rooms) do
+            if room.distanceToHall >= house.settings.maxDistanceToHall or room.distanceToHall == -1 then
+                table.removeByValue(house.rooms, room)
+            end
+            coroutine.yield()
+        end
+    end
+    for roomID, room in ipairs(house.rooms) do
+        local distance, connected = house:calculateDistanceToHall(room)
+        room.distanceToHall = distance
+        room.connectedRoom = connected
+        coroutine.yield()
+    end
+    
+    print("Recalculating safe spots...")
+    house:recalculateAttachmentPoints()
+    
+    print("Generating doors...")
+    for roomID, room in ipairs(house.rooms) do
+    
+        if not room.connectedRoom then continue end
+    
+        possibleDoorPositions = house:getSharedWallPoints(room, room.connectedRoom)
+        local doorPos = table.random(possibleDoorPositions)
+        
+        if not doorPos then continue end
+        
+        room.doorFrames = room.doorFrames or {}
+        table.insert(room.doorFrames, doorPos)
+        
+        room.connectedRoom.doorFrames = room.connectedRoom.doorFrames or {}
+        if doorPos.direction == "down" then
+            table.insert(room.connectedRoom.doorFrames, { x = doorPos.x, y = doorPos.y + 1, direction = "up" })
+        end
+        if doorPos.direction == "up" then
+            table.insert(room.connectedRoom.doorFrames, { x = doorPos.x, y = doorPos.y - 1, direction = "down" })
+        end
+        if doorPos.direction == "left" then
+            table.insert(room.connectedRoom.doorFrames, { x = doorPos.x - 1, y = doorPos.y, direction = "right" })
+        end
+        if doorPos.direction == "right" then
+            table.insert(room.connectedRoom.doorFrames, { x = doorPos.x + 1, y = doorPos.y, direction = "left" })
+        end
+        
+        coroutine.yield()
+    end
+    
+    print("Generating interior walls...")
+    for roomID, room in ipairs(house.rooms) do
+        local interiorWallPoints, interiorJunctionPoints = house:getInteriorWallPoints(room)
+        room.walls = interiorWallPoints
+        room.junctions = interiorJunctionPoints
+        coroutine.yield()
+    end
+    
+    print("Painting rooms...")
+    local hallwayColor = Color(math.random() * 360, 0.4, 1):hsvToRGB()
+    for roomID, room in ipairs(house.rooms) do
+        room.color = room.distanceToHall == 0 and hallwayColor or Color(math.random() * 360, 0.4, 1):hsvToRGB()
+        coroutine.yield()
+    end
+
+    print("Done!")
+    return true
+end)
+
+hook.add("think", "generateHouse", function()
+    while math.max(quotaAverage(), quotaUsed()) < quotaMax() * 0.8 do
+        if generateHouse() then
+            hook.remove("think", "generateHouse")
+            break
+        end
+    end
+end)
+
+if SERVER then
+
+    --models/sprops/rectangles/size_6/rect_96x96x3.mdl
+    local propQueue = {}
+    
+    local propGeneration = coroutine.wrap(function()
+    
+        local floorTileSizes = {}
+        local floorTileLookup = {}
+        do
+            local propLocations = {
+                "models/sprops/rectangles/size_6/rect_96x192x3.mdl",
+                "models/sprops/rectangles/size_6/rect_96x288x3.mdl",
+                "models/sprops/rectangles/size_6/rect_96x384x3.mdl",
+                "models/sprops/rectangles/size_6/rect_96x480x3.mdl",
+                "models/sprops/rectangles/size_6/rect_96x96x3.mdl",
+                "models/sprops/rectangles/size_8/rect_192x192x3.mdl",
+                "models/sprops/rectangles/size_8/rect_192x288x3.mdl",
+                "models/sprops/rectangles/size_8/rect_192x384x3.mdl",
+                "models/sprops/rectangles/size_8/rect_192x480x3.mdl",
+                "models/sprops/rectangles/size_10/rect_480x288x3.mdl",
+                "models/sprops/rectangles/size_10/rect_480x384x3.mdl",
+                "models/sprops/rectangles/size_10/rect_480x480x3.mdl",
+
+            }
+            
+            for i, model in ipairs(propLocations) do
+                local matcher = string.gmatch(model, "%d+")
+                local _, y, x = matcher(), tonumber(matcher()) / 96, tonumber(matcher()) / 96
+                
+                print(y .. ", " .. x)
+                
+                if not table.hasValue(floorTileSizes, Vector(x, y)) then
+                    table.insert(floorTileSizes, Vector(x, y))
+                    floorTileLookup[x .. ", " .. y] = {
+                        model = model,
+                        pos = Vector(x * 48, y * 48)
+                    }
+                end
+                
+                if not table.hasValue(floorTileSizes, Vector(y, x)) then
+                    table.insert(floorTileSizes, Vector(y, x))
+                    floorTileLookup[y .. ", " .. x] = {
+                        model = model,
+                        pos = Vector(y * 48, x * 48),
+                        ang = Angle(0, 90, 0)
+                    }
+                end
+                
+            end
+        end
+    
+        for roomID, room in ipairs(house.rooms) do
+            
+            do
+                
+                local totalArea = room.width * room.height
+                local filledArea = 0
+                
+                local boxes = {}
+                
+                while filledArea < totalArea do
+                
+                    local bestBox = {
+                        pos = Vector(0, 0),
+                        size = Vector(0, 0),
+                        lookup = floorTileLookup["1, 1"]
+                    }
+                    
+                    local current = {
+                        pos = Vector(0, 0),
+                        size = floorTileSizes[1],
+                        lookup = floorTileLookup["1, 1"]
+                    }
+                    
+                    for x = 0, room.width - 1 do
+                        for y = 0, room.height - 1 do
+                        
+                            current.pos = Vector(x, y)
+                            
+                            for i, size in ipairs(floorTileSizes) do
+                                
+                                if x + size.x > room.width then
+                                    coroutine.yield()
+                                    continue
+                                end
+                                
+                                if y + size.y > room.height then
+                                    coroutine.yield()
+                                    continue
+                                end
+                                
+                                current.size = size
+                                
+                                local isColliding = false
+                                
+                                -- Test against pre-placed boxes
+                                
+                                for boxID, box in ipairs(boxes) do
+                                    if not (box.pos.x >= current.pos.x + current.size.x or
+                                            box.pos.x + box.size.x <= current.pos.x or
+                                            box.pos.y >= current.pos.y + current.size.y or
+                                            box.pos.y + box.size.y <= current.pos.y) then
+                                        isColliding = true
+                                    end
+                                    coroutine.yield()
+                                end
+                                
+                                if not isColliding and size.x * size.y > bestBox.size.x * bestBox.size.y then 
+                                    bestBox.pos = current.pos
+                                    bestBox.size = current.size
+                                    bestBox.lookup = floorTileLookup[size.x .. ", " .. size.y]
+                                end
+                                
+                            end
+                        
+                        end
+                    end
+
+                    table.insert(boxes, bestBox)
+                    filledArea = filledArea + bestBox.size.x * bestBox.size.y
+                
+                end
+                
+                for boxID, box in ipairs(boxes) do
+                    table.insert(propQueue, {
+                        model = box.lookup.model,
+                        pos = Vector((room.x + box.pos.x) * 96, (room.y + box.pos.y) * 96, 1.5) + box.lookup.pos,
+                        mat = "models/props/de_inferno/woodfloor008a", --"sprops/textures/sprops_wood2",
+                        ang = box.lookup.ang and box.lookup.ang or Angle(0, 0, 0)
+                    })
+                    table.insert(propQueue, {
+                        model = box.lookup.model,
+                        pos = Vector((room.x + box.pos.x) * 96, (room.y + box.pos.y) * 96, 142.5) + box.lookup.pos,
+                        mat = "sprops/textures/sprops_metal5",
+                        ang = box.lookup.ang and box.lookup.ang or Angle(0, 0, 0)
+                    })
+                    coroutine.yield()
+                end
+            end
+            
+            do
+            
+                for junctionID, junction in ipairs(room.junctions) do
+                
+                    local offsets = {
+                        ["left"] = Vector(1.5, 97.5),
+                        ["right"] = Vector(94.5, 1.5),
+                        ["up"] = Vector(1.5, 1.5),
+                        ["down"] = Vector(94.5, 97.5)
+                    }
+                
+                    table.insert(propQueue, {
+                        model = "models/sprops/rectangles/size_1/rect_3x144x3.mdl",
+                        pos = Vector(96 * junction.x, 96 * junction.y, 72) + offsets[junction.direction],
+                        mat = "sprops/trans/lights/light_plastic",
+                        ang = Angle(90, 0, 0),
+                        col = room.color
+                    })
+                
+                    coroutine.yield()
+                
+                end
+                
+                for wallID, wall in ipairs(room.walls) do
+                
+                    local disp = 48 - 1.5
+                
+                    local offsetX = 48 + (wall.direction == "left" and -disp or 0) + (wall.direction == "right" and disp or 0)
+                    local offsetY = 48 + (wall.direction == "up" and -disp or 0) + (wall.direction == "down" and disp or 0)
+                
+                    table.insert(propQueue, {
+                        model = "models/sprops/rectangles/size_6/rect_96x144x3.mdl",
+                        pos = Vector(96 * wall.x + offsetX, 96 * wall.y + offsetY, 72),
+                        mat = "sprops/trans/lights/light_plastic",
+                        ang = Angle(90, (wall.direction == "left" or wall.direction == "right") and 0 or 90, 0),
+                        col = room.color
+                    })
+                
+                    coroutine.yield()
+                
+                end
+                
+            end
+            
+            for doorFrameID, doorFrame in ipairs(room.doorFrames) do
+            
+                local disp = 48 - 1.5
+                
+                local offsetX = 48 + (doorFrame.direction == "left" and -disp or 0) + (doorFrame.direction == "right" and disp or 0)
+                local offsetY = 48 + (doorFrame.direction == "up" and -disp or 0) + (doorFrame.direction == "down" and disp or 0)
+            
+                table.insert(propQueue, {
+                    model = "models/sprops/rectangles/size_4/rect_36x96x3.mdl",
+                    pos = Vector(96 * doorFrame.x + offsetX, 96 * doorFrame.y + offsetY, 126),
+                    mat = "sprops/trans/lights/light_plastic",
+                    ang = Angle(0, (doorFrame.direction == "left" or doorFrame.direction == "right") and 90 or 0, 90),
+                    col = room.color
+                })
+                
+                if doorFrame.direction == "left" or doorFrame.direction == "right" then
+                    table.insert(propQueue, {
+                        model = "models/sprops/rectangles/size_3/rect_24x108x3.mdl",
+                        pos = Vector(96 * doorFrame.x + offsetX, 96 * doorFrame.y + offsetY - 36, 54),
+                        ang = Angle(90, 90, 90),
+                        mat = "sprops/trans/lights/light_plastic",
+                        col = room.color
+                    })
+                    table.insert(propQueue, {
+                        model = "models/sprops/rectangles/size_3/rect_24x108x3.mdl",
+                        pos = Vector(96 * doorFrame.x + offsetX, 96 * doorFrame.y + offsetY + 36, 54),
+                        ang = Angle(90, 90, 90),
+                        mat = "sprops/trans/lights/light_plastic",
+                        col = room.color
+                    })
+                else
+                    table.insert(propQueue, {
+                        model = "models/sprops/rectangles/size_3/rect_24x108x3.mdl",
+                        pos = Vector(96 * doorFrame.x + offsetX - 36, 96 * doorFrame.y + offsetY, 54),
+                        ang = Angle(90, 0, 90),
+                        mat = "sprops/trans/lights/light_plastic",
+                        col = room.color
+                    })
+                    table.insert(propQueue, {
+                        model = "models/sprops/rectangles/size_3/rect_24x108x3.mdl",
+                        pos = Vector(96 * doorFrame.x + offsetX + 36, 96 * doorFrame.y + offsetY, 54),
+                        ang = Angle(90, 0, 90),
+                        mat = "sprops/trans/lights/light_plastic",
+                        col = room.color
+                    })
+                end
+            
+                coroutine.yield()
+            
+            end
+            
+        end
+        
+        return true
+
+    end)
+    
+    local function spawnProps()
+        
+        if #propQueue <= 0 then
+            hook.remove("think", "spawnProps")
+            return
+        end
+        
+        if prop.canSpawn() then
+        
+            local currentProp = table.remove(propQueue)
+            
+            local p = prop.create(chip():getPos() + currentProp.pos, currentProp.ang, currentProp.model, 1)
+            p:setMaterial(currentProp.mat)
+            p:setColor(currentProp.col or Color(255, 255, 255))
+        
+        end
+        
+    end
+    
+    hook.add("think", "propGeneration", function()
+        while math.max(quotaAverage(), quotaUsed()) < quotaMax() * 0.8 do
+            if propGeneration() then
+                hook.remove("think", "propGeneration")
+                hook.add("think", "spawnProps", spawnProps)
+                break
+            end
+        end
+    end)
+
+end
+
+if CLIENT then
+
+    render.createRenderTarget("backbuffer")
+    hook.add("renderoffscreen", "drawRooms", function()
+        render.selectRenderTarget("backbuffer")
+        render.clear()
+        local CELL_WIDTH = 1024 / house.width
+        local CELL_HEIGHT = 1024 / house.height
+        for roomIndex, room in ipairs(house.rooms) do
+            render.setColor(room.color)
+            render.drawRect(room.x * CELL_WIDTH, room.y * CELL_HEIGHT, room.width * CELL_WIDTH, room.height * CELL_HEIGHT)
+            render.setColor(Color(0, 0, 0))
+            render.drawRectOutline(room.x * CELL_WIDTH + 3, room.y * CELL_HEIGHT + 3, room.width * CELL_WIDTH - 6, room.height * CELL_HEIGHT - 6)
+        end
+        
+        render.setColor(Color(0, 0, 0))
+        for roomIndex, room in ipairs(house.rooms) do
+            if room.connectedRoom then
+                local rmx = (room.x + room.width / 2) * CELL_WIDTH
+                local rmy = (room.y + room.height / 2) * CELL_HEIGHT
+                local omx = (room.connectedRoom.x + room.connectedRoom.width / 2) * CELL_WIDTH
+                local omy = (room.connectedRoom.y + room.connectedRoom.height / 2) * CELL_HEIGHT
+                render.drawLine(rmx, rmy, omx, omy)
+            end
+            if room.doorFrames then
+                for doorFrameID, doorFrame in ipairs(room.doorFrames) do
+                    local x = doorFrame.x + 0.5 + (doorFrame.direction == "left" and -0.4 or 0) + (doorFrame.direction == "right" and 0.4 or 0)
+                    local y = doorFrame.y + 0.5 + (doorFrame.direction == "up" and -0.4 or 0) + (doorFrame.direction == "down" and 0.4 or 0)
+                    render.drawRect(x * CELL_WIDTH - 3, y * CELL_HEIGHT - 3, 6, 6)
+                    render.drawCircle((doorFrame.x + 0.5) * CELL_WIDTH, (doorFrame.y + 0.5) * CELL_HEIGHT, CELL_WIDTH / 2)
+                end
+            end
+            if room.walls then
+                for wallID, wall in ipairs(room.walls) do
+                    local x = wall.x + 0.5 + (wall.direction == "left" and -0.4 or 0) + (wall.direction == "right" and 0.4 or 0)
+                    local y = wall.y + 0.5 + (wall.direction == "up" and -0.4 or 0) + (wall.direction == "down" and 0.4 or 0)
+                    render.drawRect(x * CELL_WIDTH - 3, y * CELL_HEIGHT - 3, 6, 6)
+                end
+            end
+        end
+        --[[
+        render.setColor(Color(255, 255, 255))
+        for attachmentPointIndex, attachmentPoint in ipairs(house.attachmentPoints) do
+            render.drawRect((attachmentPoint.x + 0.5) * CELL_WIDTH - 10, (attachmentPoint.y + 0.5) * CELL_HEIGHT - 10, 20, 20)
+        end
+        ]]
+        
+    end)
+    hook.add("render", "drawToScreen", function()
+        render.setRenderTargetTexture("backbuffer")
+        render.setColor(Color(255, 255, 255))
+        render.drawTexturedRect(0, 0, 512, 512)
+    end)
+
+end

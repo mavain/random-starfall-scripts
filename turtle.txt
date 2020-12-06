@@ -1,0 +1,270 @@
+--@name Turtle
+--@author Mavain
+--@shared
+
+if SERVER then
+
+    net.receive("fileToServer", function(len)
+        
+        local str = net.readString()
+        
+        /*
+        hook.add("ClientInitialized", "sendToClients", function(ply)
+            net.start("fileToClient")
+            net.writeString(str)
+            net.send(ply)    
+            
+        end)
+        */
+        
+        for i, ply in ipairs(find.allPlayers()) do
+            net.start("fileToClient")
+            net.writeString(str)
+            net.send(ply)    
+        end
+        
+    end)
+
+else
+    
+    if player() == owner() then
+        net.start("fileToServer")
+        net.writeString(file.read("turtle.txt"))
+        net.send()
+    end
+    
+    net.receive("fileToClient", function(len)
+    
+        local TURTLE_SOURCE_STRING = net.readString()
+        
+        local turtlePosition = Vector(0, 0)
+        local turtleRotation = 0
+        local turtlePen = false
+        local turtleColor = Color(255, 255, 255)
+        
+        local TURTLE_SOURCE = {}
+        local TURTLE_SOURCE_INDEX = 1
+        
+        local TURTLE_JUMP_TARGETS = {}
+        local TURTLE_VARIABLES = {}
+        local TURTLE_STACK = {}
+        
+        local function turtleStackPush(val)
+            TURTLE_STACK[#TURTLE_STACK + 1] = val
+        end
+        
+        local function turtleStackPushIndex()
+            turtleStackPush(TURTLE_SOURCE_INDEX)
+        end
+        
+        local function turtleStackPop()
+            local val = TURTLE_STACK[#TURTLE_STACK]
+            TURTLE_STACK[#TURTLE_STACK] = nil
+            return val
+        end
+        
+        local function turtleStackPopIndex()
+            TURTLE_SOURCE_INDEX = turtleStackPop()
+        end
+        
+        local function turtleSourceEmpty()
+            return TURTLE_SOURCE_INDEX >= #TURTLE_SOURCE
+        end
+        
+        local function turtleSourceConsume()
+            local val = TURTLE_SOURCE[TURTLE_SOURCE_INDEX]
+            TURTLE_SOURCE_INDEX = TURTLE_SOURCE_INDEX + 1
+            return val
+        end
+        
+        local function turtleSourcePeek()
+            return TURTLE_SOURCE[TURTLE_SOURCE_INDEX]
+        end
+        
+        local turtleSourceNumber
+        local turtleSourceNumberParseRPN = function()
+            local stack = {}
+            
+            while turtleSourcePeek() ~= "}" do
+                
+                local token = turtleSourcePeek()
+                
+                if token == "+" then
+                    table.insert(stack, table.remove(stack) + table.remove(stack))
+                    TURTLE_SOURCE_INDEX = TURTLE_SOURCE_INDEX + 1
+                elseif token == "-" then
+                    local b = table.remove(stack)
+                    local a = table.remove(stack)
+                    table.insert(stack, a - b)
+                    TURTLE_SOURCE_INDEX = TURTLE_SOURCE_INDEX + 1
+                elseif token == "*" then
+                    table.insert(stack, table.remove(stack) * table.remove(stack))
+                    TURTLE_SOURCE_INDEX = TURTLE_SOURCE_INDEX + 1
+                elseif token == "/" then
+                    local b = table.remove(stack)
+                    local a = table.remove(stack)
+                    table.insert(stack, a / b)
+                    TURTLE_SOURCE_INDEX = TURTLE_SOURCE_INDEX + 1
+                elseif token == "%" then
+                    local b = table.remove(stack)
+                    local a = table.remove(stack)
+                    table.insert(stack, a % b)
+                    TURTLE_SOURCE_INDEX = TURTLE_SOURCE_INDEX + 1
+                elseif token == "~" then
+                    table.insert(stack, math.floor(table.remove(stack) + 0.5))
+                    TURTLE_SOURCE_INDEX = TURTLE_SOURCE_INDEX + 1
+                elseif token == "<" then
+                    local b = table.remove(stack)
+                    local a = table.remove(stack)
+                    table.insert(stack, (a < b) and 1 or 0)
+                    TURTLE_SOURCE_INDEX = TURTLE_SOURCE_INDEX + 1
+                elseif token == ">" then
+                    local b = table.remove(stack)
+                    local a = table.remove(stack)
+                    table.insert(stack, (a > b) and 1 or 0)
+                    TURTLE_SOURCE_INDEX = TURTLE_SOURCE_INDEX + 1
+                elseif token == "=" then
+                    table.insert(stack, (table.remove(stack) == table.remove(stack)) and 1 or 0)
+                    TURTLE_SOURCE_INDEX = TURTLE_SOURCE_INDEX + 1
+                else
+                    local val = turtleSourceNumber()
+                    table.insert(stack, val)
+                end
+                
+            end
+            
+            TURTLE_SOURCE_INDEX = TURTLE_SOURCE_INDEX + 1
+            
+            return stack[1]
+        end
+        
+        local turtleSourceNumberBuiltins = {
+            ["$RAND"] = function() return math.random() end,
+            ["$TURTLEX"] = function() return turtlePosition.x end,
+            ["$TURTLEY"] = function() return turtlePosition.y end,
+            ["$TURTLEANG"] = function() return turtleRotation end,
+        }
+        
+        turtleSourceNumber = function()
+            local str = turtleSourceConsume()
+            if turtleSourceNumberBuiltins[str] then return turtleSourceNumberBuiltins[str]() end
+            if str == "{" then return turtleSourceNumberParseRPN() end
+            return tonumber(str) or TURTLE_VARIABLES[str]
+        end
+        
+        local function turtleSourceString()
+            return turtleSourceConsume()
+        end
+        
+        do
+            for v in TURTLE_SOURCE_STRING:gmatch("%S+") do
+                TURTLE_SOURCE[#TURTLE_SOURCE + 1] = v
+            end
+            
+            for k, v in ipairs(TURTLE_SOURCE) do
+                if v == "@" then
+                    TURTLE_JUMP_TARGETS[TURTLE_SOURCE[k + 1]] = k + 2
+                end
+            end
+        end
+        
+        local turtleFunctions = {
+        
+            move_global = function()
+                turtlePosition = Vector(turtleSourceNumber(), turtleSourceNumber())
+            end,
+            ang_global = function()
+                turtleRotation = turtleSourceNumber()
+            end,
+            forward = function()
+                local forwardValue = turtleSourceNumber()
+                turtlePosition = turtlePosition + Vector(forwardValue * math.cos(math.rad(turtleRotation)), forwardValue * math.sin(math.rad(turtleRotation)))
+            end,
+            back = function()
+                local backValue = -turtleSourceNumber()
+                turtlePosition = turtlePosition + Vector(backValue * math.cos(math.rad(turtleRotation)), backValue * math.sin(math.rad(turtleRotation)))
+            end,
+            ang = function()
+                turtleRotation = turtleRotation + turtleSourceNumber()
+            end,
+            
+            penup = function()
+                turtlePen = false
+            end,
+            pendown = function()
+                turtlePen = true
+            end,
+            color = function()
+                turtleColor = Color(turtleSourceNumber(), turtleSourceNumber(), turtleSourceNumber())
+            end,
+            colorhsv = function()
+                turtleColor = Color(turtleSourceNumber(), turtleSourceNumber(), turtleSourceNumber()):hsvToRGB()
+            end,
+            clear = function()
+                render.selectRenderTarget("buffer")
+                render.clear()
+                render.selectRenderTarget(nil)
+            end,
+            
+            [">go"] = function()
+                TURTLE_SOURCE_INDEX = TURTLE_JUMP_TARGETS[turtleSourceString()]
+            end,
+            [">loop"] = function()
+                local jumpLabel = turtleSourceString()
+                local var = turtleSourceString()
+                local target = turtleSourceNumber()
+                local offset = turtleSourceNumber()
+                
+                if TURTLE_VARIABLES[var] ~= target then
+                    TURTLE_VARIABLES[var] = TURTLE_VARIABLES[var] + offset
+                    TURTLE_SOURCE_INDEX = TURTLE_JUMP_TARGETS[jumpLabel]
+                end
+            end,
+            [">if"] = function()
+                local jumpLabel = turtleSourceString()
+                local val = turtleSourceNumber()
+                if val ~= 0 then
+                    TURTLE_SOURCE_INDEX = TURTLE_JUMP_TARGETS[jumpLabel]
+                end
+            end,
+            [">call"] = function()
+                local callLabel = turtleSourceString()
+                turtleStackPushIndex()
+                TURTLE_SOURCE_INDEX = TURTLE_JUMP_TARGETS[callLabel]
+            end,
+            [">ret"] = function()
+                turtleStackPopIndex()
+            end,
+            
+            let = function()
+                TURTLE_VARIABLES[turtleSourceString()] = turtleSourceNumber()
+            end
+        }
+        
+        local oldPos = Vector(0, 0)
+        render.createRenderTarget("buffer")
+        hook.add("render", "turtle_draw", function()
+        
+            if not turtleSourceEmpty() then
+                local turtleCommand = turtleSourceConsume():lower()
+                
+                if turtleFunctions[turtleCommand] then turtleFunctions[turtleCommand]() end
+            end
+        
+            render.selectRenderTarget("buffer")
+            
+            if turtlePen then
+                render.setColor(turtleColor)
+                render.selectRenderTarget("buffer")
+                render.drawLine(turtlePosition.x, turtlePosition.y, oldPos.x, oldPos.y)
+            end
+            oldPos = turtlePosition   
+            
+            render.selectRenderTarget(nil)
+            render.setRenderTargetTexture("buffer")
+            render.setColor(Color(255, 255, 255))
+            render.drawTexturedRect(0, 0, 512, 512)
+         
+        end)
+    end)
+end

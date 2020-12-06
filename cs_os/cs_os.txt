@@ -1,0 +1,133 @@
+--@name Console Screen Operating System
+--@author Mavain
+--@shared
+
+--@include filesystem/filesystem.txt
+--@include graphics/cs_gl.txt
+--@include windowing/window.txt
+--@include windowing/desktop.txt
+
+--@includedir builtin_programs
+
+if SERVER then
+
+    wire.adjustInputs({"VRAM", "TopLeftScreen", "Keyboard"}, {"Wirelink", "Wirelink", "Wirelink"})
+    
+    local keyboard = wire.ports.Keyboard
+    local GL = require("graphics/cs_gl.txt")
+    local Window = require("windowing/window.txt")
+    local Desktop = require("windowing/desktop.txt")
+    local FileSystem = require("filesystem/filesystem.txt")
+    
+    local desktop = Desktop(60, 36)
+    desktop.user = find.playersByName("lyrical: the faggot", false, false)[1]
+    
+    FileSystem.readFile("cs_os/wallpapers/wallpaper.cimg", function(data)
+        local charLookup = { 32, 42, 37, 35 }--{32, 9617, 9618, 9619}
+        backgroundImage = bit.stringstream(data)
+        backgroundImageParsed = {}
+        for i = 1, backgroundImage:size() / 3 do
+            
+            local a = backgroundImage:readUInt8()
+            local b = backgroundImage:readUInt8()
+            local c = backgroundImage:readUInt8()
+            
+            local number = a + b * 256 + c * 65536
+            local charType = bit.rshift(number, 20) + 1
+            local color = bit.band(number, 1048575)
+            table.add(backgroundImageParsed, { charLookup[charType], color })
+        end
+        desktop:setBackgroundImage(backgroundImageParsed)
+    end)
+    
+    FileSystem.readFile("cs_os/internal/numbible.txt", function(data)
+        desktop.sharedData.oracleText = data:split("\n")
+    end)
+    
+    local PROGRAM_REGISTRY = {}
+    do
+        local builtinIncludes = requiredir("builtin_programs")
+        for k, v in pairs(builtinIncludes) do
+            PROGRAM_REGISTRY[v.category .. "/" .. v.name] = v
+            desktop:addMenuItem(v.category .. "/" .. v.name)
+        end
+    end
+    
+    desktop.onMenuItemSelected = function(item)
+        if PROGRAM_REGISTRY[item] then
+            desktop:addWindow(PROGRAM_REGISTRY[item].program(2, 2, desktop.width - 4, desktop.height - 5))
+        end
+    end
+    
+    desktop:addWindow(PROGRAM_REGISTRY["Builtins/Text Editor"].program(0, 0, desktop.width, desktop.height - 1))
+    
+    local interactingWindowInfo = {}
+    
+    local function update()
+        
+        desktop:updateUserInput()
+        
+        while keyboard[0] > 0 do
+            desktop:sendKeyDown(keyboard[1])
+            keyboard[0] = 0
+        end
+        
+        desktop:update()
+        
+    end
+    
+    local function gpuRender()
+    
+        if GL.isGPUReady() then
+            
+            desktop:render()
+            
+            GL.swapBuffers()
+            
+            GL.sendToGPU()
+            
+        end
+        
+    end
+    
+    local mainLoop = coroutine.wrap(function()
+        while true do
+            update()
+            coroutine.yield()
+        end
+    end)
+    
+    hook.add("think", "mainLoop", function()
+        while math.max(quotaUsed(), quotaAverage()) < quotaMax() * 0.2 do
+            mainLoop()
+        end
+    end)
+    
+    timer.create("gpuRender", 0.1, 0, gpuRender)
+end
+if CLIENT and player() == owner() then
+    
+    net.receive("fs_write", function()
+        local filename = net.readString()
+        net.readStream(function(data)
+            file.write(filename, data)
+        end)
+    end)
+    
+    net.receive("fs_read", function()
+        local filename = net.readString()
+        if file.exists(filename) then
+            net.start("fs_read")
+            net.writeString(filename)
+            net.writeString("OK")
+            net.writeStream(file.read(filename))
+            net.send()
+        else
+            net.start("fs_read")
+            net.writeString(filename)
+            net.writeString("ERR")
+            net.writeString("Could not find the file specified.")
+            net.send()
+        end
+    end)
+end

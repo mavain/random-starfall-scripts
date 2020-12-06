@@ -1,0 +1,50 @@
+--@name literally x server but its starfall
+--@author
+--@shared
+
+if SERVER then
+
+    local renderCommandQueue = {}
+
+    local render = {}
+    
+    setmetatable(render, {
+        __index = function(self, key)
+            return function(...)
+                table.insert(renderCommandQueue, { name = key, arguments = { ... } })
+            end
+        end
+    })
+    
+    timer.create("doGLShit", 0.1, 0, function()
+    
+        render.setColor(Color(0, 100, 255))
+        render.drawRect(math.random(0, 512), math.random(0, 512), math.random(0, 512), math.random(0, 512))
+    
+        net.start("renderCommandQueue")
+        net.writeTable(renderCommandQueue)
+        net.send()
+        renderCommandQueue = {}
+    end)
+
+end
+
+if CLIENT then
+
+    local renderCommandQueue = {}
+
+    net.receive("renderCommandQueue", function(len)
+        renderCommandQueue = net.readTable()        
+    end)
+    
+    hook.add("render", "renderFromQueue", function()
+        
+        for _, renderCommand in ipairs(renderCommandQueue) do
+        
+            render[renderCommand.name](unpack(renderCommand.arguments))
+        
+        end
+        
+    end)
+
+end

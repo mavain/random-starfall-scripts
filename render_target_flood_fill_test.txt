@@ -1,0 +1,148 @@
+--@name Render Target Flood Fill Test
+--@author
+--@client
+
+--if owner() ~= player() then return end
+
+local SCREEN_WIDTH = 256
+local SCREEN_HEIGHT = 256
+local RENDER_WIDTH = 1024 / SCREEN_WIDTH
+local RENDER_HEIGHT = 1024 / SCREEN_HEIGHT
+
+local filled = false
+
+pixelStack = {}
+filledPixels = {}
+for i = 1, SCREEN_WIDTH * SCREEN_HEIGHT do filledPixels[i] = false end
+
+function isPixelFilled(x, y)
+    if x < 0 or x >= SCREEN_WIDTH or y < 0 or y >= SCREEN_HEIGHT then return true end
+    return filledPixels[x + y * SCREEN_WIDTH + 1]
+end
+
+function fillPixel(x, y, c)
+
+    filledPixels[x + y * SCREEN_WIDTH + 1] = true
+    render.setColor(c)
+    render.drawRectFast(x * RENDER_WIDTH, y * RENDER_HEIGHT, RENDER_WIDTH, RENDER_HEIGHT)
+
+end
+
+function pushPixel(x, y)
+
+    if isPixelFilled(x, y) then return end
+    
+    pixelStack[#pixelStack + 1] = {x=x, y=y}
+    
+end
+
+function popPixel()
+    local pixel = pixelStack[#pixelStack]
+    pixelStack[#pixelStack] = nil
+    return pixel
+end
+
+pushPixel(math.random(0, SCREEN_WIDTH - 1), math.random(0, SCREEN_HEIGHT - 1))
+
+local index = 0
+
+function updateFloodfill()
+
+    local x = math.random(0, SCREEN_WIDTH - 1)
+    local y = math.random(0, SCREEN_HEIGHT - 1)
+    
+    local pixel = popPixel()
+    
+    if pixel == nil then
+        filled = true
+        return
+    end
+    
+    if not isPixelFilled(pixel.x, pixel.y) then
+        
+        index = index + 1
+        
+        local c = Color(index / #filledPixels * 360, 1, 1):hsvToRGB()
+        fillPixel(pixel.x, pixel.y, c)
+        
+        local dirs = {
+            Vector(pixel.x + 1, pixel.y),
+            Vector(pixel.x - 1, pixel.y),
+            Vector(pixel.x, pixel.y + 1),
+            Vector(pixel.x, pixel.y - 1)
+        }
+        
+        local d, i = table.random(dirs)
+        pushPixel(d.x, d.y)
+        table.remove(dirs, i)
+        
+        local d, i = table.random(dirs)
+        pushPixel(d.x, d.y)
+        table.remove(dirs, i)
+        
+        local d, i = table.random(dirs)
+        pushPixel(d.x, d.y)
+        table.remove(dirs, i)
+        
+        local d, i = table.random(dirs)
+        pushPixel(d.x, d.y)
+        table.remove(dirs, i)
+        
+        
+        
+        --[[
+        local dir = math.random(1, 4)
+        
+        if dir == 1 then
+            pushPixel(pixel.x + 1, pixel.y)
+            pushPixel(pixel.x, pixel.y + 1)
+            pushPixel(pixel.x - 1, pixel.y)
+            pushPixel(pixel.x, pixel.y - 1)
+        end
+        
+        if dir == 2 then
+            pushPixel(pixel.x, pixel.y + 1)
+            pushPixel(pixel.x - 1, pixel.y)
+            pushPixel(pixel.x, pixel.y - 1)
+            pushPixel(pixel.x + 1, pixel.y)
+        end
+        
+        if dir == 3 then
+            pushPixel(pixel.x - 1, pixel.y)
+            pushPixel(pixel.x + 1, pixel.y)
+            pushPixel(pixel.x, pixel.y - 1)
+            pushPixel(pixel.x, pixel.y + 1)
+        end
+        
+        if dir == 4 then
+            pushPixel(pixel.x, pixel.y - 1)
+            pushPixel(pixel.x, pixel.y + 1)
+            pushPixel(pixel.x + 1, pixel.y)
+            pushPixel(pixel.x - 1, pixel.y)
+        end
+        ]]--
+        
+    end
+
+end
+
+render.createRenderTarget("backbuffer")
+hook.add("render", "floodfill", function()
+
+    render.selectRenderTarget("backbuffer")
+    
+    --render.setColor(Color(math.random(0, 255), math.random(0, 255), math.random(0, 255)))
+    --render.drawRectFast(math.random(512, 1024), math.random(512, 1024), math.random(0, 1024), math.random(0, 1024))
+
+    if not filled then
+        for x = 1, 100 do updateFloodfill() end
+    end
+    
+    render.selectRenderTarget(nil)
+    
+    render.setRenderTargetTexture("backbuffer")
+    render.setColor(Color(255, 255, 255))
+    render.drawTexturedRectFast(0, 0, 512, 512)
+
+end)
+

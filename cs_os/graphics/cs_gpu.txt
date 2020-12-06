@@ -1,0 +1,358 @@
+--@name Console Screen GPU
+--@author Mavain
+--@server
+
+local MATRIX_HARDWARE_WIDTH = 2
+local MATRIX_HARDWARE_HEIGHT = 2
+local MATRIX_HARDWARE_TOTAL = MATRIX_HARDWARE_WIDTH * MATRIX_HARDWARE_HEIGHT
+
+local MATRIX_WIDTH = 30 * MATRIX_HARDWARE_WIDTH
+local MATRIX_HEIGHT = 18 * MATRIX_HARDWARE_HEIGHT
+local MATRIX_LOOKUP = {}
+
+local LEGACY_MODE = false
+
+local VRAM = {}
+local VRAM_POINTER = 0
+
+local GLOBAL_OFFSET_X = 0
+local GLOBAL_OFFSET_Y = 0
+
+local BACKBUFFER = {}
+local BUFFER = {}
+
+local STENCIL = {}
+local STENCIL_CURRENT = 0
+
+local function setupWirelinks()
+    local names = {}
+    local types = {}
+    for i = 1, MATRIX_HARDWARE_TOTAL do
+        table.insert(names, "CS" .. i)
+        table.insert(types, "Wirelink")
+    end
+    wire.adjustInputs(names, types)
+    -- Stall until wirelinks are tied to things
+    print("Waiting on console screens to be linked...")
+    local installed = false
+    while not installed do
+        installed = true
+        for i = 1, MATRIX_HARDWARE_TOTAL do
+            if not wire.ports["CS" .. i] then installed = false end
+        end
+        coroutine.yield()
+    end
+    print("All console screens linked!")
+end
+
+local function calculateMatrixLookup()
+    for i = 1, MATRIX_HARDWARE_TOTAL do
+        wire.ports["CS" .. i][2023] = -0.019
+    end
+
+    for y = 0, MATRIX_HEIGHT - 1 do
+        for x = 0, MATRIX_WIDTH - 1 do
+            
+            local hardwareIndex = math.floor(x / 30) + math.floor(y / 18) * MATRIX_HARDWARE_WIDTH + 1
+            local screen = wire.ports["CS" .. hardwareIndex]
+            
+            local cell = (x % 30 + (y % 18) * 30) * 2
+            
+            MATRIX_LOOKUP[x + y * MATRIX_WIDTH] = { screen = screen, cell = cell }
+            BUFFER[x + y * MATRIX_WIDTH] = { 0, 0 }
+            BACKBUFFER[x + y * MATRIX_WIDTH] = { 0, 0 }
+            STENCIL[x + y * MATRIX_WIDTH] = 0
+            
+        end
+        coroutine.yield()
+    end
+end
+
+local function getScreenAndCell(x, y)
+    local cellInfo = MATRIX_LOOKUP[x + y * MATRIX_WIDTH]
+    local cell = cellInfo.cell
+    local screen = cellInfo.screen
+    return screen, cell
+end
+
+local function writeToScreen(x, y, char, color)
+    x = x + GLOBAL_OFFSET_X
+    y = y + GLOBAL_OFFSET_Y
+    if x < 0 then return end
+    if y < 0 then return end
+    if x >= MATRIX_WIDTH then return end
+    if y >= MATRIX_HEIGHT then return end
+    if STENCIL_CURRENT ~= -1 and STENCIL[x + y * MATRIX_WIDTH] ~= STENCIL_CURRENT then return end
+    if LEGACY_MODE then
+        local cellInfo = MATRIX_LOOKUP[x + y * MATRIX_WIDTH]
+        local cell = cellInfo.cell
+        local screen = cellInfo.screen
+        screen[cell] = char
+        if color < 1000 then
+            screen[cell + 1] = math.floor(screen[cell + 1] / 1000) * 1000 + color
+        else
+            screen[cell + 1] = color
+        end
+    else
+        if color < 1000 then
+            local pos = x + y * MATRIX_WIDTH
+            if BACKBUFFER[pos] then
+                BACKBUFFER[pos] = { char, math.floor(BACKBUFFER[pos][2] / 1000) * 1000 + color }
+            else
+                BACKBUFFER[pos] = { char, color }
+            end
+        else
+            BACKBUFFER[x + y * MATRIX_WIDTH] = { char, color }
+        end
+    end
+end
+
+local function writeToScreenNoMask(x, y, char, color)
+    x = x + GLOBAL_OFFSET_X
+    y = y + GLOBAL_OFFSET_Y
+    if x < 0 then return end
+    if y < 0 then return end
+    if x >= MATRIX_WIDTH then return end
+    if y >= MATRIX_HEIGHT then return end
+    if STENCIL_CURRENT ~= -1 and STENCIL[x + y * MATRIX_WIDTH] ~= STENCIL_CURRENT then return end
+    if LEGACY_MODE then
+        local cellInfo = MATRIX_LOOKUP[x + y * MATRIX_WIDTH]
+        local cell = cellInfo.cell
+        local screen = cellInfo.screen
+        screen[cell] = char
+        screen[cell + 1] = color
+    else
+        BACKBUFFER[x + y * MATRIX_WIDTH] = { char, color }
+    end
+end
+
+local function readFromScreen(x, y)
+    local cellInfo = MATRIX_LOOKUP[x + y * MATRIX_WIDTH]
+    local cell = cellInfo.cell
+    local screen = cellInfo.screen
+    return screen[cell]
+end
+
+local function readVRAM()
+    local data = math.floor(VRAM[VRAM_POINTER])
+    VRAM_POINTER = VRAM_POINTER + 1
+    return data
+end
+
+local INSTRUCTIONS  = {
+    [1] = function() -- Clear Screen
+        if LEGACY_MODE then
+            for i = 1, MATRIX_HARDWARE_TOTAL do
+                wire.ports["CS" .. i][2041] = 1
+            end
+            for i = 0, MATRIX_WIDTH * MATRIX_HEIGHT - 1 do
+                STENCIL[i] = 0
+                coroutine.yield()
+            end
+        else
+            STENCIL = {}
+            BACKBUFFER = {}
+        end
+    end,
+    [2] = function() -- Set Cursor
+        local x = readVRAM()
+        local y = readVRAM()
+        
+        for i = 1, MATRIX_HARDWARE_TOTAL do
+            local scr = wire.ports["CS" .. i]
+            scr[2046] = 0
+            scr[2044] = 1
+            scr[2043] = 0.25
+        end
+        
+        if x >= 0 and x < MATRIX_WIDTH and y >= 0 and y < MATRIX_HEIGHT then
+            local screen, cell = getScreenAndCell(x, y)
+            screen[2045] = cell
+            screen[2046] = 1
+        end
+    end,
+    [3] = function() -- Clear Stencil Rectangle
+        local startX = readVRAM()
+        local startY = readVRAM()
+        local width = readVRAM()
+        local height = readVRAM()
+        local num = readVRAM()
+        for x = math.clamp(startX, 0, MATRIX_WIDTH - 1), math.clamp(startX + width - 1, 0, MATRIX_WIDTH - 1) do
+            for y = math.clamp(startY, 0, MATRIX_HEIGHT - 1), math.clamp(startY + height - 1, 0, MATRIX_HEIGHT - 1) do
+                STENCIL[x + y * MATRIX_WIDTH] = num
+            end
+        end
+    end,
+    [4] = function() -- Set Stencil Current
+        STENCIL_CURRENT = readVRAM()
+    end,
+    [5] = function() -- Set Global Offset
+        GLOBAL_OFFSET_X = readVRAM()
+        GLOBAL_OFFSET_Y = readVRAM()
+    end,
+    [100] = function() -- Draw Text
+        local startX = readVRAM()
+        local startY = readVRAM()
+        local color = readVRAM()
+        local textLength = readVRAM()
+        
+        for x = 1, textLength do
+            writeToScreen(startX + x - 1, startY, readVRAM(), color)
+            coroutine.yield()
+        end
+    end,
+    [101] = function() -- Draw Rectangle
+        local startX = readVRAM()
+        local startY = readVRAM()
+        local width = readVRAM()
+        local height = readVRAM()
+        local color = readVRAM()
+        
+        for y = startY, startY + height - 1 do
+            for x = startX, startX + width - 1 do
+                writeToScreen(x, y, 32, color)
+                coroutine.yield()
+            end
+        end
+    end,
+    [102] = function() --Draw Rectangle Outline
+        local startX = readVRAM()
+        local startY = readVRAM()
+        local width = readVRAM()
+        local height = readVRAM()
+        local color = readVRAM()
+        
+        local endX = startX + width - 1
+        local endY = startY + height - 1
+        
+        for x = startX + 1, endX - 1 do
+            writeToScreen(x, startY, 32, color)
+            writeToScreen(x, endY, 32, color)
+            coroutine.yield()
+        end
+        
+        for y = startY, endY do
+            writeToScreen(startX, y, 32, color)
+            writeToScreen(endX, y, 32, color)
+            coroutine.yield()
+        end
+    end,
+    [200] = function() -- Draw Image Raw
+        local startX = readVRAM()
+        local startY = readVRAM()
+        local width = readVRAM()
+        local height = readVRAM()
+        
+        for y = startY, startY + height - 1 do
+            for x = startX, startX + width - 1 do
+                writeToScreenNoMask(x, y, 32, readVRAM())
+                coroutine.yield()
+            end
+        end
+    end,
+    [201] = function() -- Draw Image Raw With Dithering Characters
+        local startX = readVRAM()
+        local startY = readVRAM()
+        local width = readVRAM()
+        local height = readVRAM()
+        
+        for y = startY, startY + height - 1 do
+            for x = startX, startX + width - 1 do
+                writeToScreenNoMask(x, y, readVRAM(), readVRAM())
+                coroutine.yield()
+            end
+        end
+    end,
+    [10000] = function()
+        
+        for y = 0, MATRIX_HEIGHT - 1 do
+            for x = 0, MATRIX_WIDTH - 1 do
+            
+                local pixelPos = x + y * MATRIX_WIDTH
+            
+                local backbufferPixel = BACKBUFFER[pixelPos] or { 0, 0 }
+                local bufferPixel = BUFFER[pixelPos] or { 0, 0 }
+                
+                if backbufferPixel[1] ~= bufferPixel[1] or backbufferPixel[2] ~= bufferPixel[2] then
+                    
+                    local cellInfo = MATRIX_LOOKUP[pixelPos]
+                    local cell = cellInfo.cell
+                    local screen = cellInfo.screen
+                    screen[cell] = backbufferPixel[1]
+                    screen[cell + 1] = backbufferPixel[2]
+                    
+                end
+                
+                BUFFER[pixelPos] = backbufferPixel
+            
+                coroutine.yield()
+            end
+        end
+        
+    end
+}
+
+local function main()
+
+    setupWirelinks()
+    calculateMatrixLookup()
+
+    while true do
+    
+        if VRAM_POINTER == 0 then
+            coroutine.yield()
+            continue
+        end
+        
+        local graphicsFunction = readVRAM()
+        
+        if graphicsFunction == 0 then
+            VRAM_POINTER = 0
+            coroutine.yield()
+            continue
+        end
+        
+        if not INSTRUCTIONS[graphicsFunction] then
+            print("Invalid instruction! #" .. graphicsFunction)
+            coroutine.yield()
+            continue
+        end
+        
+        INSTRUCTIONS[graphicsFunction]()
+        coroutine.yield()
+    
+    end
+
+end
+
+do --Setup main loop within a coroutine, and set up vram hooks
+
+    local mainCoroutine = coroutine.wrap(main)
+    
+    hook.add("remote", "readVRAM", function(sender, owner, payload)
+        VRAM = payload.VRAM
+        VRAM_POINTER = 1
+    end)
+    
+    hook.add("think", "mainLoop", function()
+        while math.max(quotaAverage(), quotaUsed()) < quotaMax() * 0.3 do
+            mainCoroutine()
+        end
+    end)
+    
+    hook.add("readcell", "readVRAM", function(addr)
+        if addr == 0 then
+            if VRAM_POINTER == 0 then return 1 end
+            return 0
+        end
+    end)
+    
+    hook.add("writecell", "writeVRAM", function(addr, data)
+        if addr == 0 and data == 1 then
+            VRAM_POINTER = 1
+            return
+        end
+        VRAM[addr] = data
+    end)
+
+end

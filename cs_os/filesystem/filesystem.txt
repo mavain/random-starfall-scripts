@@ -1,0 +1,58 @@
+
+local callbacks = {}
+local errCallbacks = {}
+
+local readQueue = {}
+local isReading = false
+
+timer.create("fs_queue", 0.2, 0, function()
+    if isReading then return end
+    local filename = table.remove(readQueue, 1)
+    if not filename then return end
+    net.start("fs_read")
+    net.writeString(filename)
+    net.send(owner())
+    isReading = true
+end)
+
+local FileSystem = {}
+
+function FileSystem.readFile(name, callback, errCallback)
+    if not callbacks[name] then callbacks[name] = {} end
+    table.insert(callbacks[name], callback)
+    if not errCallbacks[name] then errCallbacks[name] = {} end
+    table.insert(errCallbacks[name], errCallback)
+    table.insert(readQueue, name)
+end
+
+function FileSystem.writeFile(name, data)
+    net.start("fs_write")
+    net.writeString(name)
+    net.writeStream(data)
+    net.send(owner())
+end
+
+net.receive("fs_read", function()
+    local filename = net.readString()
+    local status = net.readString()
+    if status == "OK" then
+        net.readStream(function(data)
+            for k, v in ipairs(callbacks[filename]) do
+                v(data)
+            end
+            callbacks[filename] = nil
+            errCallbacks[filename] = nil
+            isReading = false
+        end)
+    else
+        local err = net.readString()
+        for k, v in ipairs(errCallbacks[filename]) do
+            v(err)
+        end
+        callbacks[filename] = nil
+        errCallbacks[filename] = nil
+        isReading = false
+    end
+end)
+
+return FileSystem
